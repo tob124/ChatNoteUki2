@@ -4,7 +4,7 @@
 
 ## 安装与首次使用
 
-1. 安装 `release/ChatNoteUki-0.1.0-Setup-x64.exe`，或运行 `release/win-unpacked/ChatNoteUki.exe`。
+1. 安装 `release/ChatNoteUki-0.1.1-Setup-x64.exe`，或运行 `release/win-unpacked/ChatNoteUki.exe`。
 2. 打开「设置与数据」，填写自己的 DeepSeek API key。默认使用 `deepseek-flash`，自动分类、标题、概述和简短回应合并为一次调用。
 3. 可立即离线记录。未配置 key 的记录先显示原文首行和「待生成」；配置后依序处理。失败任务仅手动重试，已成功的任务不重复调用。
 4. 可选：配置坚果云 WebDAV，填写服务器地址 `https://dav.jianguoyun.com/dav/`、坚果云账户和**第三方应用密码**，默认目录 `ChatNoteUki`。不要填写坚果云登录密码。
@@ -31,6 +31,8 @@
 先完成手机上传，再启动 Windows 或点击「同步」。Windows 按文件顺序保存原文、归档到云端并发布恢复清单，随后使用强 ETag / `If-Match` 条件清空。AI 失败不会影响已保存的原文，也不会阻止安全清空。
 
 发生追加冲突时只导入新增部分；既有内容被改写时，保存冲突快照并暂停清空，请核对手机文件。服务器不支持条件写入或 inbox 没有强 ETag 时，程序保留原文并显示原因，不无条件清空。
+
+0.1.1 已实测适配坚果云：内部规范化其未加引号的 ETag，条件更新时发送服务器返回的原始标识。由于坚果云会忽略 `If-None-Match: *`，新文件先上传到唯一临时路径，再使用 `MOVE` 和 `Overwrite: F` 创建目标，保护已有归档与恢复清单。首次连接仍验证这些保护实际有效，验证失败就暂停清空。
 
 **限制：**条件写入只能防止服务器当时的并发覆盖，不能阻止手机编辑器稍后上传旧副本。不要在 Windows 导入时让手机继续编辑旧副本；读到旧内容重新出现时先核对。相同文字可以是你有意记录的新笔记，程序不会永久按内容去重。
 
@@ -69,8 +71,15 @@ npm run verify:secrets
 
 `npm test` 使用模拟 AI/WebDAV，不产生模型费用。桌面测试也模拟 AI，并使用 `.local/` 隔离数据。`node scripts/live-smoke.mjs` 是显式真实联调入口，需仅为该进程设置 `DEEPSEEK_API_KEY`；最多 3 次 Flash 请求，报告不包含 key，测试凭据仅 DPAPI 加密保存于被 Git 忽略的 `.local/`。
 
+`scripts/configure-webdav.ts` 提供显式坚果云配置与隔离联调：从进程环境读取 `UKI_DAV_USER`、`UKI_DAV_PASSWORD`，可选 `UKI_API_KEY`，加密写入正式本机资料目录；在唯一临时子目录验证三条笔记的导入、清空和恢复，随后删除测试目录。验证成功后初始化正式备份，只在入口不存在时创建空 `inbox.txt`，不清空已有入口。此脚本不调用 AI。请勿把环境变量的实际值写入源码或命令脚本。
+
+```powershell
+npm exec -- esbuild scripts/configure-webdav.ts --bundle --platform=node --format=cjs --target=node24 --external:electron --outfile=.local/configure-webdav.cjs
+npm exec -- electron .local/configure-webdav.cjs
+```
+
 GitHub Actions 在 Windows 上运行类型检查、单元测试、桌面测试和安装包构建，生成可下载的安装包 artifact。首次原型安装包未签名；应用升级暂为手动安装，不自动删除数据。
 
 ## 首版边界
 
-只做 Windows 10/11 x64；没有手机应用、向量数据库、知识图谱、联网研究或多人格。坚果云服务器真实条件写入能力会在首次连接时用独立临时文件验证。正式发布前需用自己的第三方应用密码完成真实 WebDAV 联调，模拟测试不替代真实验证。
+只做 Windows 10/11 x64；没有手机应用、向量数据库、知识图谱、联网研究或多人格。坚果云服务器真实条件写入能力会在首次连接时用独立临时文件验证。本次真实 WebDAV 验证已通过，其他账户与手机编辑器仍应确认上传完成及旧副本处理方式，模拟测试不替代真实验证。

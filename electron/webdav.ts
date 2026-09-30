@@ -46,6 +46,49 @@ export class WebDav implements Dav {
         (method === "MKCOL" ? "/" : ""),
       base,
     );
+    const nutstore = base.hostname === "dav.jianguoyun.com";
+    // Nutstore ignores If-None-Match: *. A unique staged upload followed by
+    // MOVE Overwrite:F provides verified create-only semantics instead.
+    if (nutstore && method === "PUT" && headers["If-None-Match"] === "*") {
+      const prefix = path.includes("/")
+        ? path.slice(0, path.lastIndexOf("/") + 1)
+        : "";
+      const staging = `${prefix}.uki-create-${randomUUID()}.tmp`;
+      const { "If-None-Match": _condition, ...uploadHeaders } = headers;
+      let owned = false;
+      try {
+        const uploaded = await this.request(
+          "PUT",
+          staging,
+          body,
+          uploadHeaders,
+        );
+        if (uploaded.status < 200 || uploaded.status >= 300) return uploaded;
+        owned = true;
+        const moved = await this.request("MOVE", staging, undefined, {
+          Destination: url.href,
+          Overwrite: "F",
+        });
+        // Nutstore reports destination-exists as 409 rather than 412.
+        if (moved.status === 409) {
+          const existing = await this.request("GET", path);
+          if (existing.status === 200)
+            return { status: 412, etag: existing.etag, body: new Uint8Array() };
+        }
+        return moved;
+      } finally {
+        if (owned) await this.request("DELETE", staging).catch(() => {});
+      }
+    }
+    const wireHeaders = { ...headers };
+    // Nutstore sends an unquoted strong content validator and requires that exact
+    // wire value in If-Match. Keep a canonical quoted validator inside the app.
+    if (
+      nutstore &&
+      /^"[A-Za-z0-9_-]{16,128}"$/.test(wireHeaders["If-Match"] ?? "")
+    ) {
+      wireHeaders["If-Match"] = wireHeaders["If-Match"].slice(1, -1);
+    }
     const response = await fetch(url, {
       method,
       redirect: "error",
@@ -55,7 +98,7 @@ export class WebDav implements Dav {
         ...(body !== undefined
           ? { "Content-Type": "application/octet-stream" }
           : {}),
-        ...headers,
+        ...wireHeaders,
       },
       body:
         body === undefined
@@ -82,9 +125,12 @@ export class WebDav implements Dav {
         chunks.push(result.value);
       }
     }
+    const tag = response.headers.get("etag");
+    const etag =
+      nutstore && tag && /^[A-Za-z0-9_-]{16,128}$/.test(tag) ? `"${tag}"` : tag;
     return {
       status: response.status,
-      etag: response.headers.get("etag"),
+      etag,
       body: Buffer.concat(chunks),
     };
   }
