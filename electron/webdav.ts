@@ -163,6 +163,7 @@ const ok = (r: DavResponse, action: string) => {
 
 export class SyncEngine {
   status = "尚未配置坚果云";
+  lastSucceeded = false;
   private busy = false;
   private capability: boolean | null = null;
   constructor(
@@ -244,6 +245,44 @@ export class SyncEngine {
       );
     if (!manifest && Number(this.store.getMeta("syncedSeq") ?? 0) > 0)
       throw new Error("云端恢复清单缺失，暂停同步以保护已有数据");
+  }
+  private async ensureOwner(remote: {
+    value: Manifest | null;
+    etag: string | null;
+  }) {
+    if (
+      remote.value &&
+      remote.value.deviceId !== this.store.getMeta("deviceId") &&
+      remote.value.batches.length === 0 &&
+      Number(this.store.getMeta("syncedSeq") ?? 0) === 0
+    ) {
+      // A setup-only empty manifest contains no thoughts to recover. Claim it
+      // with CAS so reinstalling or first using another local profile is safe.
+      if (!strongEtag(remote.etag) || !(await this.probe()))
+        throw new Error("空云端库缺少可靠条件写入，无法安全初始化同步");
+      const next: Manifest = {
+        ...remote.value,
+        deviceId: this.store.getMeta("deviceId")!,
+        generation: remote.value.generation + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      const result = await this.dav.request(
+        "PUT",
+        "manifest.json",
+        JSON.stringify(next),
+        {
+          "If-Match": remote.etag,
+        },
+      );
+      ok(result, "绑定空云端库");
+      const confirmed = await this.manifest();
+      if (JSON.stringify(confirmed.value) !== JSON.stringify(next))
+        throw new Error("空云端库绑定结果无法确认，保留本地数据");
+      remote = confirmed;
+      this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
+    }
+    this.assertOwner(remote.value);
+    return remote;
   }
   private async publish(remote: {
     value: Manifest | null;
@@ -333,16 +372,17 @@ export class SyncEngine {
   async backup() {
     if (this.busy) return;
     this.busy = true;
+    this.lastSucceeded = false;
     try {
       await this.prepare();
-      const remote = await this.manifest();
-      this.assertOwner(remote.value);
+      const remote = await this.ensureOwner(await this.manifest());
       if (!(await this.probe())) {
         this.status = "WebDAV 条件写入验证未通过，备份暂停";
         return;
       }
       await this.publish(remote);
       this.status = "思想数据已备份";
+      this.lastSucceeded = true;
     } catch (e) {
       this.status = safeSyncError(e);
       throw new Error(this.status);
@@ -354,12 +394,12 @@ export class SyncEngine {
   async sync() {
     if (this.busy) throw new Error("同步正在进行");
     this.busy = true;
+    this.lastSucceeded = false;
     this.status = "正在读取手机输入";
     this.changed();
     try {
       await this.prepare();
-      let remote = await this.manifest();
-      this.assertOwner(remote.value);
+      let remote = await this.ensureOwner(await this.manifest());
       let inbox = await this.dav.request("GET", "inbox.txt");
       if (inbox.status === 404) {
         const create = await this.dav.request("PUT", "inbox.txt", "", {
@@ -413,6 +453,7 @@ export class SyncEngine {
           this.clearObserved();
           await this.publish(remote);
           this.status = "已同步，手机输入已归档并清空";
+          this.lastSucceeded = true;
           return;
         }
         if (clear.status !== 412) ok(clear, "条件清空 inbox");
@@ -425,6 +466,7 @@ export class SyncEngine {
           this.clearObserved();
           await this.publish(remote);
           this.status = "已同步，inbox 已为空";
+          this.lastSucceeded = true;
           return;
         }
         const archive = await this.dav.request(
@@ -439,6 +481,7 @@ export class SyncEngine {
       this.status = batch
         ? "手机仍在更新 inbox，已保留内容；请稍后再次同步"
         : "思想数据已同步";
+      this.lastSucceeded = !batch;
     } catch (e) {
       this.status = safeSyncError(e);
       throw new Error(this.status);
@@ -471,6 +514,7 @@ export class SyncEngine {
     if (this.store.latestSeq() !== 0)
       throw new Error("换机恢复只允许在空白本地库进行，以免覆盖当前思想");
     this.busy = true;
+    this.lastSucceeded = false;
     this.status = "正在恢复云端思想库并接管";
     this.changed();
     try {
@@ -508,6 +552,7 @@ export class SyncEngine {
       this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
       this.store.recoverInterrupted();
       this.status = "已从云端恢复并接管；请停止旧电脑同步";
+      this.lastSucceeded = true;
     } catch (e) {
       this.status = safeSyncError(e);
       throw new Error(this.status);

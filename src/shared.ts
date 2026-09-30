@@ -82,6 +82,8 @@ export const settingsSchema = z.object({
   davUrl: z.string().url().default("https://dav.jianguoyun.com/dav/"),
   davUser: z.string().max(300).default(""),
   directory: z.string().max(200).default("ChatNoteUki"),
+  autoSync: z.boolean().default(true),
+  syncIntervalSeconds: z.number().int().min(60).max(600).default(60),
   dailyInputLimit: z.number().int().min(8000).max(1000000).default(100000),
   dailyOutputLimit: z.number().int().min(1000).max(100000).default(12000),
 });

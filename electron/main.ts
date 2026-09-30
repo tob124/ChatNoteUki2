@@ -7,6 +7,7 @@ import { Store } from "./store";
 import { Credentials } from "./credentials";
 import { AiQueue, safeAiError } from "./ai";
 import { SyncEngine, WebDav } from "./webdav";
+import { AutoSync } from "./auto-sync";
 import {
   settingsSchema,
   stateContentSchema,
@@ -24,39 +25,37 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-// An explicit local profile also isolates packaged acceptance tests and supports portable data.
-if (process.env.UKI_DATA_DIR) {
-  const profile = resolve(process.env.UKI_DATA_DIR);
-  mkdirSync(profile, { recursive: true });
-  app.setPath("userData", profile);
-}
+// Keep installed builds and the setup helper on the same stable profile path.
+// An explicit profile isolates acceptance tests and supports portable data.
+const profile = process.env.UKI_DATA_DIR
+  ? resolve(process.env.UKI_DATA_DIR)
+  : join(app.getPath("appData"), "ChatNoteUki");
+mkdirSync(profile, { recursive: true });
+app.setPath("userData", profile);
 let win: BrowserWindow | null = null;
 let store: Store;
 let credentials: Credentials;
 let ai: AiQueue;
 let sync: SyncEngine | null = null;
-let backgroundSync: ReturnType<typeof setTimeout> | null = null;
+const automaticSync = new AutoSync(async (kind) => {
+  const engine = sync;
+  if (!engine) throw new Error("请先配置坚果云");
+  try {
+    if (kind === "full") await engine.sync();
+    else if (kind === "restore") await engine.restore();
+    else await engine.backup();
+    if (!engine.lastSucceeded) throw new Error(engine.status);
+  } finally {
+    if (kind !== "backup") void ai.pump();
+  }
+});
 const uuid = z.string().uuid();
 const model = z.enum(["deepseek-flash", "deepseek-v4-pro"]);
 function notify() {
   win?.webContents.send("uki:changed");
 }
 function scheduleBackup() {
-  if (!sync) return;
-  if (backgroundSync) clearTimeout(backgroundSync);
-  backgroundSync = setTimeout(() => {
-    backgroundSync = null;
-    void sync!
-      .backup()
-      .catch(() => {})
-      .finally(() => {
-        if (
-          sync?.status === "思想数据已备份" &&
-          store.latestSeq() > Number(store.getMeta("syncedSeq") ?? 0)
-        )
-          scheduleBackup();
-      });
-  }, 3000);
+  if (sync) automaticSync.changed();
 }
 function changed() {
   notify();
@@ -69,12 +68,17 @@ function configureSync() {
     password = credentials.davPassword();
   } catch {
     sync = null;
+    automaticSync.configure(false, 60000);
     return;
   }
   sync =
     settings.davUser && password
       ? new SyncEngine(store, new WebDav(settings, password), notify)
       : null;
+  automaticSync.configure(
+    !!sync && settings.autoSync,
+    settings.syncIntervalSeconds * 1000,
+  );
 }
 function view(): AppView {
   return {
@@ -157,20 +161,12 @@ function registerIpc() {
     notify();
     void ai.pump();
     scheduleBackup();
+    if (sync && next.autoSync) void automaticSync.run("full").catch(() => {});
   });
-  handle("sync", async () => {
-    if (!sync) throw new Error("请先配置坚果云");
-    try {
-      await sync.sync();
-    } finally {
-      void ai.pump();
-      scheduleBackup();
-    }
-  });
+  handle("sync", () => automaticSync.run("full"));
   handle("restore", async () => {
     if (!sync) throw new Error("请先配置坚果云");
-    await sync.restore();
-    void ai.pump();
+    await automaticSync.run("restore");
     scheduleBackup();
   });
 }
@@ -239,14 +235,7 @@ else {
       registerIpc();
       await createWindow();
       void ai.pump();
-      if (sync)
-        void sync
-          .sync()
-          .catch(() => {})
-          .finally(() => {
-            void ai.pump();
-            scheduleBackup();
-          });
+      if (sync) void automaticSync.run("full").catch(() => {});
     })
     .catch((error) => {
       console.error(safeAiError(error));
@@ -254,7 +243,7 @@ else {
     });
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", () => {
-    if (backgroundSync) clearTimeout(backgroundSync);
+    automaticSync.stop();
     store?.close();
   });
 }

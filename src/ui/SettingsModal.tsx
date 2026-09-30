@@ -14,6 +14,8 @@ export function SettingsModal({
     davUrl: data.settings.davUrl,
     davUser: data.settings.davUser,
     directory: data.settings.directory,
+    autoSync: data.settings.autoSync,
+    syncIntervalSeconds: data.settings.syncIntervalSeconds,
     dailyInputLimit: data.settings.dailyInputLimit,
     dailyOutputLimit: data.settings.dailyOutputLimit,
   });
@@ -145,7 +147,40 @@ export function SettingsModal({
         </label>
         <p className="hint">
           手机编辑此目录下的
-          inbox.txt，以空行分隔笔记。先完成手机上传，再启动电脑或点击同步；原文归档成功后才条件清空。手机随后上传旧副本仍可能覆盖云端文件。
+          inbox.txt，以空行分隔笔记。先完成手机上传，电脑自动导入；原文归档成功后才条件清空。手机随后上传旧副本仍可能覆盖云端文件。
+        </p>
+        <label className="auto-sync-toggle">
+          <input
+            type="checkbox"
+            checked={settings.autoSync}
+            onChange={(e) =>
+              setSettings({ ...settings, autoSync: e.target.checked })
+            }
+          />
+          自动同步
+        </label>
+        <label>
+          检查手机输入的间隔
+          <select
+            disabled={!settings.autoSync}
+            value={settings.syncIntervalSeconds}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                syncIntervalSeconds: Number(e.target.value),
+              })
+            }
+          >
+            <option value={60}>每 1 分钟</option>
+            <option value={120}>每 2 分钟</option>
+            <option value={300}>每 5 分钟</option>
+            <option value={600}>每 10 分钟</option>
+          </select>
+        </label>
+        <p className="hint">
+          默认开启。电脑上的记录与修改在保存后约 3
+          秒自动上传；网络失败时逐步延长重试间隔，最多 15
+          分钟。应用关闭时不运行，关闭自动同步后仍可点击「同步」。
         </p>
         <div className="settings-footer">
           <button className="primary" type="submit">

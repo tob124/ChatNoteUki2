@@ -49,6 +49,73 @@ describe("inbox parsing and receipts", () => {
   });
 });
 describe("conditional clearing and cloud restore", () => {
+  it("refuses empty-cloud binding when conditional writes cannot be verified", async () => {
+    const setup = open(),
+      local = open(),
+      dav = new FakeDav();
+    await new SyncEngine(setup, dav).backup();
+    const originalManifest = dav.files.get("manifest.json");
+    dav.conditional = false;
+    await expect(new SyncEngine(local, dav).backup()).rejects.toThrow(
+      "无法安全初始化",
+    );
+    expect(dav.files.get("manifest.json")).toBe(originalManifest);
+  });
+  it("safely binds a setup-only empty cloud to a new profile with unsynced local notes", async () => {
+    const setup = open(),
+      local = open(),
+      dav = new FakeDav();
+    await new SyncEngine(setup, dav).backup();
+    local.capture({ raw: "首次记录必须保留" });
+    const engine = new SyncEngine(local, dav);
+    await engine.sync();
+    expect(engine.lastSucceeded).toBe(true);
+    expect(JSON.parse(dav.files.get("manifest.json")!).deviceId).toBe(
+      local.getMeta("deviceId"),
+    );
+    expect(local.snapshot().notes.map((n) => n.raw)).toEqual([
+      "首次记录必须保留",
+    ]);
+    const restored = open();
+    await new SyncEngine(restored, dav).restore();
+    expect(restored.snapshot()).toEqual(local.snapshot());
+  });
+  it("does not automatically take over another profile's nonempty cloud", async () => {
+    const owner = open(),
+      local = open(),
+      dav = new FakeDav();
+    owner.capture({ raw: "云端原文" });
+    await new SyncEngine(owner, dav).backup();
+    const originalManifest = dav.files.get("manifest.json");
+    local.capture({ raw: "本地原文" });
+    dav.files.set("inbox.txt", "手机原文");
+    await expect(new SyncEngine(local, dav).sync()).rejects.toThrow("另一台");
+    expect(dav.files.get("manifest.json")).toBe(originalManifest);
+    expect(dav.files.get("inbox.txt")).toBe("手机原文");
+    expect(local.snapshot().notes[0].raw).toBe("本地原文");
+  });
+  it("does not overwrite a concurrently changed empty-cloud manifest", async () => {
+    const setup = open(),
+      local = open(),
+      dav = new FakeDav();
+    await new SyncEngine(setup, dav).backup();
+    const original = dav.request.bind(dav);
+    let conflicting: string | undefined;
+    dav.request = async (...args) => {
+      if (args[0] === "PUT" && args[1] === "manifest.json") {
+        const changed = JSON.parse(dav.files.get("manifest.json")!);
+        changed.generation += 1;
+        conflicting = JSON.stringify(changed);
+        dav.files.set("manifest.json", conflicting!);
+      }
+      return original(...args);
+    };
+    local.capture({ raw: "待上传" });
+    await expect(new SyncEngine(local, dav).sync()).rejects.toThrow("HTTP 412");
+    expect(dav.files.get("manifest.json")).toBe(conflicting);
+    expect(local.getMeta("syncedSeq")).toBeNull();
+    expect(local.snapshot().notes).toHaveLength(1);
+  });
   it("archives and publishes before clearing, then restores every event on a new machine", async () => {
     const s = open(),
       dav = new FakeDav();
