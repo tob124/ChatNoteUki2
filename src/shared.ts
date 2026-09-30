@@ -98,18 +98,23 @@ export interface AppView extends Snapshot {
   pendingSync: number;
   canRestore: boolean;
 }
-export const captureSchema = z.object({
-  raw: z
-    .string()
-    .min(1)
-    .max(50000)
-    .refine((s) => s.trim().length > 0, "请输入内容"),
-  threadId: z.string().uuid().nullable().default(null),
-  mode: z.enum(["note", "discussion"]).default("note"),
-  model: z
-    .enum(["deepseek-flash", "deepseek-v4-pro"])
-    .default("deepseek-flash"),
-});
+export const captureSchema = z
+  .object({
+    raw: z
+      .string()
+      .min(1)
+      .max(50000)
+      .refine((s) => s.trim().length > 0, "请输入内容"),
+    threadId: z.string().uuid().nullable().default(null),
+    mode: z.enum(["note", "discussion"]).default("note"),
+    model: z
+      .enum(["deepseek-flash", "deepseek-v4-pro"])
+      .default("deepseek-flash"),
+  })
+  .refine(
+    (input) => input.mode === "discussion" || input.model === "deepseek-flash",
+    "Pro 仅用于主动讨论，自动记录使用 Flash",
+  );
 export type Capture = z.input<typeof captureSchema>;
 export const aiNoteSchema = z.object({
   threadId: z.string().uuid().nullable(),

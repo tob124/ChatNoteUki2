@@ -71,6 +71,9 @@ describe("bounded AI processing", () => {
   });
   it("does not call AI when key or daily budget is unavailable", async () => {
     const s = open();
+    expect(() =>
+      s.capture({ raw: "自动记录", model: "deepseek-v4-pro" }),
+    ).toThrow("Pro 仅用于主动讨论");
     s.capture({ raw: "原文" });
     let calls = 0;
     const transport: AiTransport = {

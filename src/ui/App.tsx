@@ -87,6 +87,7 @@ export function App() {
       });
       setRaw((current) => (current === submitted ? "" : current));
       setOpenNote(id);
+      setPro(false);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
