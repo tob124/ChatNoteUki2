@@ -288,7 +288,7 @@ export class Store {
     )
       this.rebuild();
     this.db.exec(
-      "CREATE INDEX IF NOT EXISTS entity_dates_v2 ON entities_v2(kind,createdAt,seq); CREATE INDEX IF NOT EXISTS task_queue_v2 ON entities_v2(kind,json_extract(body,'$.status'),json_extract(body,'$.kind'),seq) WHERE kind='tasks'; CREATE INDEX IF NOT EXISTS usage_dates_v2 ON entities_v2(kind,json_extract(body,'$.createdAt')) WHERE kind IN ('usage','reservations');",
+      "CREATE INDEX IF NOT EXISTS entity_dates_v2 ON entities_v2(kind,createdAt,seq); CREATE INDEX IF NOT EXISTS note_edition_v2 ON entities_v2(kind,json_extract(body,'$.edition')) WHERE kind='notes'; CREATE INDEX IF NOT EXISTS task_queue_v2 ON entities_v2(kind,json_extract(body,'$.status'),json_extract(body,'$.kind'),seq) WHERE kind='tasks'; CREATE INDEX IF NOT EXISTS usage_dates_v2 ON entities_v2(kind,json_extract(body,'$.createdAt')) WHERE kind IN ('usage','reservations');",
     );
     if (!this.getMeta("deviceId")) this.setMeta("deviceId", randomUUID());
   }
@@ -1102,8 +1102,15 @@ export class Store {
   /** One-time raw-only reentry. The reset and every replacement note commit together. */
   reimportRawNotes() {
     if (this.getMeta("rawReimport")) return;
+    if (
+      !this.db
+        .prepare(
+          "SELECT 1 FROM entities_v2 WHERE kind='notes' AND json_extract(body,'$.edition') IS NULL LIMIT 1",
+        )
+        .get()
+    )
+      return;
     const notes = this.all<Note>("notes");
-    if (!notes.some((n) => n.edition !== 3)) return;
     if (this.path !== ":memory:") {
       const folder = join(dirname(this.path), "backups");
       mkdirSync(folder, { recursive: true });
