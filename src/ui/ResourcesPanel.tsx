@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type {
   Evidence,
+  AiTask,
   Thread,
   ThreadResources,
   UkiApi,
@@ -8,6 +9,7 @@ import type {
 } from "../shared";
 import { CognitionContent, RecapContent } from "./WorkUnits";
 import { dateLabel, type Action } from "./RecordCard";
+import { AnalysisControls } from "./AnalysisControls";
 export type Reference = {
   detail: Awaited<ReturnType<UkiApi["detail"]>>;
   revision: number;
@@ -21,6 +23,10 @@ export function ResourcesPanel({
   onEvidence,
   onAction,
   onManage,
+  tasks,
+  hasApiKey,
+  onSettings,
+  onResult,
 }: {
   resources: ThreadResources | null;
   reference: Reference | null;
@@ -30,28 +36,28 @@ export function ResourcesPanel({
   onEvidence(r: Evidence): void;
   onAction: Action;
   onManage(thread: Thread): void;
+  tasks: AiTask[];
+  hasApiKey: boolean;
+  onSettings(): void;
+  onResult(task: AiTask): void;
 }) {
-  const [history, setHistory] = useState<ThreadResources | null>(null),
-    [pro, setPro] = useState(false),
-    [historyError, setHistoryError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null),
     previous = useRef<"normal" | "wide">("normal");
-  useEffect(() => {
-    setHistory(null);
-    setPro(false);
-  }, [resources?.thread?.id]);
   useEffect(() => {
     if (panel === "max") dialog.current?.showModal();
     else if (panel !== "closed") previous.current = panel;
     return () => dialog.current?.close();
   }, [panel]);
-  const data = history ?? resources;
+  const data = resources;
+  const recapTask = tasks
+    .filter((t) => t.threadId === data?.thread?.id && t.kind === "recap")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const content = (
     <>
       <header className="resource-header">
         <div>
           <span className="eyebrow">随时查阅</span>
-          <h2>{reference ? "原文引用" : history ? "历史资料" : "问题概览"}</h2>
+          <h2>{reference ? "原文引用" : "问题概览"}</h2>
         </div>
         <div className="resource-controls">
           <button
@@ -99,11 +105,6 @@ export function ResourcesPanel({
           </>
         ) : (
           <>
-            {history && (
-              <button className="back-link" onClick={() => setHistory(null)}>
-                ← 返回当前问题
-              </button>
-            )}
             {data?.thread ? (
               <>
                 <h3>{data.thread.title}</h3>
@@ -123,46 +124,27 @@ export function ResourcesPanel({
                   <CognitionContent value={data.cognition} />
                 </section>
                 {!data.thread.archived && (
-                  <div className="analysis-controls">
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={pro}
-                        onChange={(e) => setPro(e.target.checked)}
-                      />
-                      本次主动分析使用 Pro
-                    </label>
-                    <button
-                      onClick={() => {
-                        const model = pro
-                          ? "deepseek-v4-pro"
-                          : "deepseek-flash";
-                        setPro(false);
-                        onAction(() =>
-                          window.uki.propose(data.thread!.id, model),
-                        );
-                      }}
-                    >
-                      回看历史，提出认知差异
-                    </button>
-                    <button
-                      onClick={() => {
-                        const model = pro
-                          ? "deepseek-v4-pro"
-                          : "deepseek-flash";
-                        setPro(false);
-                        onAction(() =>
-                          window.uki.recap(data.thread!.id, model),
-                        );
-                      }}
-                    >
-                      {data.recapDue ? "有新内容 · 生成回顾" : "生成引用回顾"}
-                    </button>
-                    <p className="hint">分析后在工作区审批。点击才调用 AI。</p>
-                  </div>
+                  <AnalysisControls
+                    key={data.thread.id}
+                    threadId={data.thread.id}
+                    count={data.count}
+                    tasks={tasks}
+                    hasApiKey={hasApiKey}
+                    onAction={onAction}
+                    onSettings={onSettings}
+                    onResult={onResult}
+                  />
                 )}
                 {data.recaps.map((r) => (
-                  <details key={r.id}>
+                  <details
+                    key={r.id}
+                    open={
+                      recapTask?.status === "done" &&
+                      recapTask.resultId === r.id
+                        ? true
+                        : undefined
+                    }
+                  >
                     <summary>回顾 · {dateLabel(r.createdAt)}</summary>
                     <RecapContent value={r} onEvidence={onEvidence} />
                   </details>
@@ -190,27 +172,6 @@ export function ResourcesPanel({
                 <p>进入一个问题，查看已确认认知、未解决问题和带引用的回顾。</p>
               </div>
             )}
-            <details className="legacy">
-              <summary>
-                历史线程资料 · {resources?.legacyThreads.length ?? 0}
-              </summary>
-              {resources?.legacyThreads.map((t) => (
-                <button
-                  className="history-link"
-                  key={t.id}
-                  onClick={() => {
-                    setHistoryError("");
-                    void window.uki
-                      .resources(t.id)
-                      .then(setHistory)
-                      .catch((e) => setHistoryError(e.message));
-                  }}
-                >
-                  {t.title}
-                </button>
-              ))}
-              {historyError && <p className="error">{historyError}</p>}
-            </details>
           </>
         )}
       </div>

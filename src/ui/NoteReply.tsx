@@ -14,12 +14,16 @@ export function NoteReply({
   const [pro, setPro] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [parentRevision, setParentRevision] = useState(
+    note.parentNoteId ? (note.parentRevision ?? 0) : (note.revision ?? 0),
+  );
   const input = useRef<HTMLTextAreaElement>(null);
   const key = "conversation:" + rootId;
   const state = (text: string) => ({
     draft: text,
     mode: "discussion" as const,
     parentNoteId: rootId,
+    parentRevision,
     openIds: [],
   });
   useEffect(() => {
@@ -27,7 +31,11 @@ export function NoteReply({
     void window.uki
       .workspaceState(key)
       .then((saved) => {
-        if (active) setDraft(saved.draft);
+        if (active) {
+          setDraft(saved.draft);
+          if (saved.draft && saved.parentRevision !== undefined)
+            setParentRevision(saved.parentRevision);
+        }
       })
       .catch((e) => {
         if (active) setError(e.message);
@@ -52,9 +60,7 @@ export function NoteReply({
               threadId: note.threadId,
               mode: "discussion",
               parentNoteId: rootId,
-              parentRevision: note.parentNoteId
-                ? (note.parentRevision ?? 0)
-                : (note.revision ?? 0),
+              parentRevision,
               model: pro ? "deepseek-v4-pro" : "deepseek-flash",
             });
             setDraft("");

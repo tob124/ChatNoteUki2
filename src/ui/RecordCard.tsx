@@ -22,7 +22,6 @@ export function RecordCard({
   expanded,
   onOpen,
   onAction,
-  onDiscuss,
   onEvidence,
   revisionToken,
 }: {
@@ -31,7 +30,6 @@ export function RecordCard({
   expanded: boolean;
   onOpen(): void;
   onAction: Action;
-  onDiscuss(note: Note): void;
   onEvidence(r: Evidence): void;
   revisionToken: number;
 }) {
@@ -200,14 +198,11 @@ export function RecordCard({
                   ))}
                 </details>
               )}
-              {full.originalThreadId && (
-                <p className="hint">
-                  升级前所属：
-                  {threads.find((t) => t.id === full.originalThreadId)?.title ??
-                    "历史线程"}
+              {full.error && (
+                <p className={full.status === "pending" ? "hint" : "error"}>
+                  {full.error}
                 </p>
               )}
-              {full.error && <p className="error">{full.error}</p>}
               {replying && <NoteReply note={full} onAction={onAction} />}
               <div className="record-actions">
                 {full.status === "failed" && (
@@ -222,12 +217,6 @@ export function RecordCard({
                   disabled={thread?.archived}
                 >
                   {replying ? "收起回复" : "回复 AI"}
-                </button>
-                <button
-                  onClick={() => onDiscuss(full)}
-                  disabled={!full.threadId || thread?.archived}
-                >
-                  在工作区讨论
                 </button>
                 <button
                   onClick={() => {

@@ -7,6 +7,7 @@ import {
 } from "react";
 import type {
   Bootstrap,
+  AiTask,
   Evidence,
   Note,
   Proposal,
@@ -38,7 +39,6 @@ const labels: Record<string, string> = {
   pending: "待整理",
   organize: "整理建议",
   review: "回顾",
-  history: "历史记录",
 };
 const cleanError = (e: unknown) =>
   String(e instanceof Error ? e.message : e).replace(
@@ -63,13 +63,23 @@ export function App() {
     [date, setDate] = useState("");
   const [settings, setSettings] = useState(false),
     [editingThread, setEditingThread] = useState<Thread | "new" | null>(null),
-    [pro, setPro] = useState(false),
     [saving, setSaving] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
     [newContent, setNewContent] = useState(false),
     [prefs, setPrefs] = useState<Record<string, number | boolean | string>>({}),
     [collapsed, setCollapsed] = useState<string[]>([]),
     [loading, setLoading] = useState(false);
+  const [resultToShow, setResultToShow] = useState<string | null>(null);
+  useEffect(() => {
+    if (!resultToShow || !page) return;
+    const element = scroll.current?.querySelector<HTMLElement>(
+      `[data-unit="${resultToShow}"]`,
+    );
+    if (element) {
+      element.scrollIntoView({ block: "start" });
+      setResultToShow(null);
+    }
+  }, [resultToShow, page]);
   const initialized = useRef(false),
     resourceVersion = useRef(0);
   const live = useRef({ workspace, state }),
@@ -257,6 +267,15 @@ export function App() {
     [refresh],
   );
   const navigate = async (w: string, focus = false) => {
+    if (w === live.current.workspace) {
+      if (focus) {
+        patch({ before: undefined, date: undefined, anchor: undefined });
+        setDate("");
+        restoreScroll.current = "bottom";
+        document.getElementById("capture")?.focus();
+      }
+      return;
+    }
     const version = ++navVersion.current;
     setLoading(true);
     try {
@@ -328,21 +347,15 @@ export function App() {
       const id = await window.uki.capture({
         raw: submitted,
         threadId: threadId && !thread?.archived ? threadId : null,
-        mode: state.mode,
-        parentNoteId: state.mode === "discussion" ? state.parentNoteId : null,
-        parentRevision:
-          state.mode === "discussion" ? state.parentRevision : undefined,
-        model:
-          state.mode === "discussion" && pro
-            ? "deepseek-v4-pro"
-            : "deepseek-flash",
+        mode: "note",
+        parentNoteId: null,
+        model: "deepseek-flash",
       });
       setState((s) => ({
         ...s,
         draft: s.draft === submitted ? "" : s.draft,
         openIds: [...s.openIds, id].slice(-100),
       }));
-      setPro(false);
       await refresh();
     } catch (e) {
       setError(cleanError(e));
@@ -350,19 +363,21 @@ export function App() {
       setSaving(false);
     }
   };
-  const discuss = (note: Note) =>
+  const showResult = (task: AiTask) =>
     action(async () => {
-      if (note.threadId !== workspace) await navigate(note.threadId!);
-      setState((s) => ({
-        ...s,
-        mode: "discussion",
-        parentNoteId: note.parentNoteId ?? note.id,
-        parentRevision: note.parentNoteId
-          ? (note.parentRevision ?? 0)
-          : (note.revision ?? 0),
-        parentTitle: note.parentNoteId ? "起始笔记" : note.title,
-      }));
-      document.getElementById("capture")?.focus();
+      if (!task.threadId || !task.resultId) return;
+      await navigate(task.threadId);
+      restoreScroll.current = null;
+      patch({
+        before: task.resultBefore,
+        date: undefined,
+        anchor: undefined,
+        anchorOffset: undefined,
+        panel: "closed",
+      });
+      setDate("");
+      setResultToShow(task.resultId);
+      setNewContent(false);
     });
   const preference = (key: string, value: string | boolean | number) => {
     const next = { ...prefs, [key]: value };
@@ -497,16 +512,24 @@ export function App() {
                 先记录。相关想法会归入已有问题；新问题建议等你确认。
               </p>
             )}
+            {data.threads.some((t) => t.archived) && (
+              <details className="archived-problems">
+                <summary>已归档问题</summary>
+                {data.threads
+                  .filter((t) => t.archived)
+                  .map((t) => (
+                    <button
+                      key={t.id}
+                      className="thread-item"
+                      onClick={() => void navigate(t.id)}
+                    >
+                      {t.title}
+                    </button>
+                  ))}
+              </details>
+            )}
           </div>
           <div className="sidebar-footer">
-            <button
-              onClick={() => {
-                patch({ panel: "normal" });
-                setReference(null);
-              }}
-            >
-              历史资料
-            </button>
             <button onClick={() => setSettings(true)}>设置与数据</button>
             <p>
               {data.pendingSync
@@ -690,7 +713,6 @@ export function App() {
                     })
                   }
                   onAction={action}
-                  onDiscuss={discuss}
                   onEvidence={evidence}
                   revisionToken={page.latest}
                 />
@@ -770,47 +792,24 @@ export function App() {
         </div>
         <div className="composer">
           <div className="composer-tabs">
-            <button
-              className={state.mode === "note" ? "selected" : ""}
-              onClick={() => {
-                patch({ mode: "note", parentNoteId: null });
-                setPro(false);
-              }}
-            >
-              记录想法
-            </button>
-            <button
-              disabled={!threadId || thread?.archived || !state.parentNoteId}
-              className={state.mode === "discussion" ? "selected" : ""}
-              onClick={() => patch({ mode: "discussion" })}
-            >
-              继续讨论
-            </button>
+            <strong className="section-label">记录新想法</strong>
             <span>
-              {state.mode === "discussion"
-                ? `讨论：${state.parentTitle ?? "起始笔记"}`
-                : "归入：" +
-                  (thread && !thread.archived ? thread.title : "自动整理")}
+              {"归入：" +
+                (thread && !thread.archived ? thread.title : "自动整理")}
             </span>
-            {state.mode === "discussion" && (
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={pro}
-                  onChange={(e) => setPro(e.target.checked)}
-                />
-                本次 Pro
-              </label>
-            )}
           </div>
+          {state.discussionDraftMoved && (
+            <p className="hint">
+              讨论草稿已移到原笔记的“回复 AI”中。
+              <button onClick={() => patch({ discussionDraftMoved: false })}>
+                知道了
+              </button>
+            </p>
+          )}
           <textarea
             id="capture"
             aria-label="写下想法"
-            placeholder={
-              state.mode === "discussion"
-                ? "继续这个问题…"
-                : "想到什么，直接写下来。"
-            }
+            placeholder="想到什么，直接写下来。回复 AI 请打开笔记卡片。"
             value={state.draft}
             maxLength={50000}
             onChange={(e) => patch({ draft: e.target.value })}
@@ -834,11 +833,11 @@ export function App() {
               disabled={!state.draft.trim() || saving}
               onClick={() => void capture()}
             >
-              {state.mode === "discussion" ? "发送并讨论" : "保存想法"}
+              保存想法
             </button>
           </div>
         </div>
-        <footer className="sync-status" title={data.syncStatus}>
+        <footer className="sync-status" role="status" title={data.syncStatus}>
           {data.aiStatus}
           <span>{data.syncStatus}</span>
         </footer>
@@ -853,6 +852,10 @@ export function App() {
           onEvidence={evidence}
           onAction={action}
           onManage={setEditingThread}
+          tasks={data.tasks}
+          hasApiKey={data.settings.hasApiKey}
+          onSettings={() => setSettings(true)}
+          onResult={showResult}
         />
       )}
       {settings && (

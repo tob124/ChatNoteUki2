@@ -76,7 +76,7 @@ test("Windows desktop: immediate save, metadata, search, cognition, restart and 
   await expect(page.locator(".record")).toHaveCount(1);
   await page.getByLabel("搜索历史").fill("");
   await page.getByRole("button", { name: "城市规划", exact: true }).click();
-  await page.getByRole("button", { name: "回看历史，提出认知差异" }).click();
+  await page.getByRole("button", { name: "检查认知变化", exact: true }).click();
   await expect(page.locator(".proposal")).toBeVisible();
   expect(
     (await page.evaluate(() => window.uki.view())).cognitions,

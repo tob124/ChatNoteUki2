@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { humanizeGenerated, humanizeText } from "./presentation";
 import {
   aiNoteSchema,
   captureSchema,
@@ -59,6 +60,8 @@ const noteSchema = z.object({
   parentNoteId: uuid.nullable().optional(),
   parentRevision: natural.optional(),
   legacy: z.boolean().optional(),
+  edition: z.literal(3).optional(),
+  reentered: z.boolean().optional(),
 });
 const batchSchema = z.object({
   id: uuid,
@@ -119,6 +122,10 @@ const schemas = {
     usage: z.object({ input: natural, output: natural }).optional(),
   }),
   "note.failed": z.object({ id: uuid, error: z.string().max(1000) }),
+  "note.deferred": z.object({
+    id: uuid,
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }),
   "note.retried": z.object({ id: uuid }),
   "note.moved": z.object({ id: uuid, threadId: uuid.nullable() }),
   "note.corrected": z.object({ id: uuid, raw: z.string().min(1).max(50000) }),
@@ -155,6 +162,7 @@ const schemas = {
   "usage.reserved": usageSchema,
   "usage.released": z.object({ id: uuid }),
   "library.migrated": z.object({ version: z.literal(2) }),
+  "library.raw-reimported": z.object({ version: z.literal(1) }),
   "structure.added": structureInputSchema.extend({
     id: uuid,
     fingerprint: z.string().length(64),
@@ -543,6 +551,15 @@ export class Store {
         );
         break;
       }
+      case "note.deferred": {
+        const n = this.note(p.id);
+        n.status = "pending";
+        n.error = "今日 AI 预算不足，明日自动继续；原文已保存。";
+        delete n.processing;
+        this.setMeta("noteBudgetDay", p.day);
+        save(n);
+        break;
+      }
       case "note.started":
       case "note.failed":
       case "note.retried": {
@@ -557,6 +574,7 @@ export class Store {
               : "pending";
         if (e.type === "note.retried") n.legacy = false;
         n.error = p.error ?? null;
+        if (e.type === "note.started") this.setMeta("noteBudgetDay", "");
         if (e.type === "note.started" && p.input)
           n.processing = {
             input: p.input,
@@ -630,6 +648,20 @@ export class Store {
         n.title = p.title;
         n.titleLocked = true;
         save(n);
+        break;
+      }
+      case "library.raw-reimported": {
+        if (this.getMeta("rawReimport")) throw new Error("原文已重新导入");
+        // Keep inbox receipts and budget accounting: neither may be reset by an upgrade.
+        this.db.exec(
+          "DELETE FROM entities_v2 WHERE kind NOT IN ('batches','usage','reservations'); DELETE FROM note_query_v2; DELETE FROM search_v2; DELETE FROM task_notes_v2;",
+        );
+        this.db
+          .prepare(
+            "DELETE FROM meta WHERE key LIKE 'activity:%' OR key LIKE 'noteVersion:%' OR key='projectionNoteCount'",
+          )
+          .run();
+        this.setMeta("rawReimport", e.id);
         break;
       }
       case "library.migrated": {
@@ -955,7 +987,7 @@ export class Store {
       );
       this.db
         .prepare(
-          "DELETE FROM meta WHERE key='migrationV2' OR key='projectionNoteCount' OR key LIKE 'activity:%' OR key LIKE 'noteVersion:%'",
+          "DELETE FROM meta WHERE key='migrationV2' OR key='rawReimport' OR key='projectionNoteCount' OR key LIKE 'activity:%' OR key LIKE 'noteVersion:%'",
         )
         .run();
       for (const r of this.db
@@ -1067,6 +1099,31 @@ export class Store {
     );
     this.append("library.migrated", { version: 2 });
   }
+  /** One-time raw-only reentry. The reset and every replacement note commit together. */
+  reimportRawNotes() {
+    if (this.getMeta("rawReimport")) return;
+    const notes = this.all<Note>("notes");
+    if (!notes.some((n) => n.edition !== 3)) return;
+    if (this.path !== ":memory:") {
+      const folder = join(dirname(this.path), "backups");
+      mkdirSync(folder, { recursive: true });
+      const file = join(folder, "before-raw-reimport-" + Date.now() + ".db");
+      this.db.prepare("VACUUM INTO ?").run(file);
+      this.setMeta("rawReimportBackup", file);
+    }
+    const events = [this.event("library.raw-reimported", { version: 1 })];
+    for (const old of notes) {
+      if (old.mode !== "note" || old.parentNoteId) continue;
+      const note = this.createNote(
+        { raw: old.currentRaw ?? old.raw },
+        old.source,
+      );
+      note.createdAt = old.createdAt;
+      note.reentered = true;
+      events.push(this.event("note.added", note));
+    }
+    this.appendMany(events);
+  }
   createNote(
     rawInput: unknown,
     source: Note["source"] = "desktop",
@@ -1100,6 +1157,7 @@ export class Store {
       revision: 0,
       assignmentRevision: 0,
       legacy: false,
+      edition: 3,
     };
   }
   capture(input: unknown) {
@@ -1388,7 +1446,7 @@ export class Store {
   nextNote(): Note | null {
     const r = this.db
       .prepare(
-        "SELECT id FROM note_query_v2 WHERE status='pending' ORDER BY seq LIMIT 1",
+        "SELECT n.id FROM note_query_v2 n JOIN entities_v2 e ON e.kind='notes' AND e.id=n.id WHERE n.status='pending' ORDER BY coalesce(json_extract(e.body,'$.reentered'),0),n.seq LIMIT 1",
       )
       .get();
     return r ? this.note(String(r.id)) : null;
@@ -1414,7 +1472,6 @@ export class Store {
       proposals: this.forThread<Proposal>("proposals", id, 30),
       recaps,
       cognitionHistory: this.forThread<Cognition>("cognitionHistory", id, 30),
-      legacyThreads: this.threads().filter((t) => t.archived),
       count: scope.length
         ? Number(
             this.db
@@ -1433,10 +1490,52 @@ export class Store {
   }
   workspaceState(key: string, value?: WorkspaceState): WorkspaceState {
     if (value) this.setMeta("workspace:" + key, JSON.stringify(value));
-    return JSON.parse(
+    let saved: WorkspaceState = JSON.parse(
       this.getMeta("workspace:" + key) ??
         '{"draft":"","mode":"note","parentNoteId":null,"openIds":[]}',
     );
+    if (
+      !value &&
+      !key.startsWith("conversation:") &&
+      saved.mode === "discussion"
+    ) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        if (saved.draft && saved.parentNoteId) {
+          const target = "workspace:conversation:" + saved.parentNoteId;
+          const existing: WorkspaceState = JSON.parse(
+            this.getMeta(target) ?? '{"draft":""}',
+          );
+          this.setMeta(
+            target,
+            JSON.stringify({
+              draft: existing.draft
+                ? existing.draft + "\n\n" + saved.draft
+                : saved.draft,
+              mode: "discussion",
+              parentNoteId: saved.parentNoteId,
+              parentRevision: existing.draft
+                ? existing.parentRevision
+                : saved.parentRevision,
+              openIds: [],
+            }),
+          );
+        }
+        saved = {
+          ...saved,
+          mode: "note",
+          draft: saved.parentNoteId ? "" : saved.draft,
+          parentNoteId: null,
+          discussionDraftMoved: !!saved.draft && !!saved.parentNoteId,
+        };
+        this.setMeta("workspace:" + key, JSON.stringify(saved));
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    return saved;
   }
   preferences(value?: Record<string, number | boolean | string>) {
     if (value) this.setMeta("preferences", JSON.stringify(value));
@@ -1605,6 +1704,26 @@ export class Store {
   }
   tasks(): AiTask[] {
     return this.all("tasks");
+  }
+  display<T>(value: T): T {
+    return humanizeGenerated(value, (text) =>
+      humanizeText(text, (id) => {
+        const rows = this.db
+          .prepare(
+            "SELECT json_extract(body,'$.title') AS title FROM entities_v2 WHERE kind IN ('threads','notes') AND id>=? AND id<=? LIMIT 2",
+          )
+          .all(id, id.length === 8 ? id + "\uffff" : id);
+        return rows.length ? rows.map((r) => String(r.title)).join("／") : null;
+      }),
+    );
+  }
+  resultBefore(id: string): number | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT seq FROM entities_v2 WHERE kind IN ('proposals','recaps') AND id=? LIMIT 1",
+      )
+      .get(id);
+    return row ? Number(row.seq) + 1 : undefined;
   }
   addTask(
     kind: AiTask["kind"],

@@ -129,7 +129,16 @@ function bootstrap(): Bootstrap {
     ),
     tasks: store
       .latest<import("../src/shared").AiTask>("tasks", 30)
-      .map(({ input, result, ...task }) => task),
+      .map(({ input, result, ...task }) => {
+        const resultId = uuid.safeParse(
+          (result as { resultId?: string } | undefined)?.resultId,
+        ).data;
+        return {
+          ...task,
+          resultId,
+          resultBefore: resultId ? store.resultBefore(resultId) : undefined,
+        };
+      }),
   };
 }
 function registerIpc() {
@@ -156,27 +165,31 @@ function registerIpc() {
   handle("importDetail", (id) => store.importDetail(uuid.parse(id)));
   handle("bootstrap", bootstrap);
   handle("workspace", (input) =>
-    store.workspace(
-      z
-        .object({
-          workspace: z.union([
-            uuid,
-            z.enum(["all", "pending", "organize", "review", "history"]),
-          ]),
-          before: z.number().int().positive().optional(),
-          date: z
-            .string()
-            .regex(/^\d{4}-\d{2}-\d{2}$/)
-            .optional(),
-          query: z.string().max(200).optional(),
-          searchIn: z.enum(["original", "reply"]).optional(),
-          aiFilter: z.enum(["all", "pending", "failed"]).optional(),
-        })
-        .parse(input),
+    store.display(
+      store.workspace(
+        z
+          .object({
+            workspace: z.union([
+              uuid,
+              z.enum(["all", "pending", "organize", "review", "history"]),
+            ]),
+            before: z.number().int().positive().optional(),
+            date: z
+              .string()
+              .regex(/^\d{4}-\d{2}-\d{2}$/)
+              .optional(),
+            query: z.string().max(200).optional(),
+            searchIn: z.enum(["original", "reply"]).optional(),
+            aiFilter: z.enum(["all", "pending", "failed"]).optional(),
+          })
+          .parse(input),
+      ),
     ),
   );
-  handle("detail", (id) => store.detail(uuid.parse(id)));
-  handle("resources", (id) => store.resources(uuid.nullable().parse(id)));
+  handle("detail", (id) => store.display(store.detail(uuid.parse(id))));
+  handle("resources", (id) =>
+    store.display(store.resources(uuid.nullable().parse(id))),
+  );
   handle("workspaceState", (key, value) =>
     store.workspaceState(
       z.string().max(100).parse(key),
@@ -199,6 +212,7 @@ function registerIpc() {
               openIds: z.array(uuid).max(100),
               panel: z.enum(["closed", "normal", "wide", "max"]).optional(),
               scroll: z.number().nonnegative().optional(),
+              discussionDraftMoved: z.boolean().optional(),
             })
             .parse(value),
     ),
@@ -283,9 +297,15 @@ function registerIpc() {
     });
     void ai.pump();
   });
-  handle("recap", (id, selectedModel) =>
-    ai.recap(uuid.parse(id), model.parse(selectedModel)),
-  );
+  handle("recap", (id, selectedModel) => {
+    const task = ai.queueAnalysis(
+      "recap",
+      uuid.parse(id),
+      model.parse(selectedModel),
+    );
+    void ai.pump();
+    return task;
+  });
   handle("capture", (input) => {
     const id = store.capture(input);
     changed();
@@ -305,9 +325,14 @@ function registerIpc() {
     });
     changed();
   });
-  handle("propose", async (id, selectedModel) => {
-    await ai.propose(uuid.parse(id), model.parse(selectedModel));
-    scheduleBackup();
+  handle("propose", (id, selectedModel) => {
+    const task = ai.queueAnalysis(
+      "cognition",
+      uuid.parse(id),
+      model.parse(selectedModel),
+    );
+    void ai.pump();
+    return task;
   });
   handle("resolve", (id, decision, content) => {
     store.append("proposal.resolved", {
@@ -335,6 +360,11 @@ function registerIpc() {
       z.string().max(300).optional().parse(password),
     );
     configureSync();
+    if (
+      next.dailyInputLimit !== previous.dailyInputLimit ||
+      next.dailyOutputLimit !== previous.dailyOutputLimit
+    )
+      store.setMeta("noteBudgetDay", "");
     notify();
     void ai.pump();
     scheduleBackup();
@@ -394,7 +424,7 @@ else {
       const data = app.getPath("userData");
       mkdirSync(data, { recursive: true });
       store = new Store(join(data, "thoughts.db"));
-      store.migrateV2();
+      store.reimportRawNotes();
       store.recoverInterrupted();
       credentials = new Credentials(join(data, "credentials.json"));
       ai = new AiQueue(store, credentials, changed);

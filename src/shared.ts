@@ -57,6 +57,8 @@ export interface Note {
   parentNoteId?: string | null;
   parentRevision?: number;
   legacy?: boolean;
+  edition?: 3;
+  reentered?: boolean;
 }
 export interface Evidence {
   noteId: string;
@@ -113,6 +115,8 @@ export interface AiTask {
   inputVersions?: Evidence[];
   budgetDay?: string;
   result?: unknown;
+  resultId?: string;
+  resultBefore?: number;
 }
 export interface Recap {
   id: string;
@@ -161,6 +165,7 @@ export interface WorkspaceState {
   openIds: string[];
   panel?: "closed" | "normal" | "wide" | "max";
   scroll?: number;
+  discussionDraftMoved?: boolean;
 }
 export interface SyncDiagnostic {
   method: string;
@@ -196,7 +201,6 @@ export interface ThreadResources {
   proposals: Proposal[];
   recaps: Recap[];
   cognitionHistory: Cognition[];
-  legacyThreads: Thread[];
   count: number;
   recapDue: boolean;
 }
@@ -304,6 +308,7 @@ export const eventSchema = z.object({
     "note.started",
     "note.completed",
     "note.failed",
+    "note.deferred",
     "note.retried",
     "note.moved",
     "thread.added",
@@ -316,6 +321,7 @@ export const eventSchema = z.object({
     "usage.reserved",
     "usage.released",
     "library.migrated",
+    "library.raw-reimported",
     "thread.updated",
     "note.corrected",
     "note.titled",
@@ -375,7 +381,7 @@ export interface UkiApi {
   undo(id: string): Promise<void>;
   regenerate(id: string): Promise<void>;
   retryTask(id: string): Promise<void>;
-  recap(threadId: string, model: Note["model"]): Promise<void>;
+  recap(threadId: string, model: Note["model"]): Promise<string>;
   view(): Promise<AppView>;
   capture(input: Capture): Promise<string>;
   search(query: string): Promise<Note[]>;
@@ -384,7 +390,7 @@ export interface UkiApi {
   propose(
     threadId: string,
     model: "deepseek-flash" | "deepseek-v4-pro",
-  ): Promise<void>;
+  ): Promise<string>;
   resolve(
     proposalId: string,
     decision: "accept" | "reject",

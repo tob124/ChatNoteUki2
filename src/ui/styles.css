@@ -547,6 +547,27 @@ ul {
 .check input {
   margin: 0;
 }
+.analysis-task {
+  margin: 14px 0;
+}
+.analysis-progress {
+  border-left: 2px solid #829fca;
+  padding: 8px 10px;
+  background: #f2f5f9;
+  font-size: 12px;
+}
+.analysis-progress.failed {
+  border-color: #bc6666;
+}
+.analysis-progress.done {
+  border-color: #6a9077;
+}
+.analysis-progress p {
+  margin: 8px 0;
+}
+.analysis-progress button {
+  margin-top: 8px;
+}
 .note-reply-form {
   margin: 16px 0;
   padding: 14px;

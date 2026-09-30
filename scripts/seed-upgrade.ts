@@ -16,6 +16,8 @@ const {
   parentRevision,
   parentNoteId,
   assignmentRevision,
+  edition,
+  reentered,
   ...old
 } = note;
 s.append("note.added", old);
@@ -50,4 +52,13 @@ s.append("proposal.added", {
   status: "pending",
 });
 s.append("proposal.resolved", { id: p, decision: "accept" });
+s.append("note.corrected", { id: note.id, raw: "升级验收最新更正。" });
+s.capture({
+  raw: "旧对话不导入",
+  mode: "discussion",
+  threadId: root,
+  parentNoteId: note.id,
+});
+s.capture({ raw: "相同原文" });
+s.capture({ raw: "相同原文" });
 s.close();
