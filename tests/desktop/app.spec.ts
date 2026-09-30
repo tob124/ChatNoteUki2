@@ -68,9 +68,10 @@ test("Windows desktop: immediate save, metadata, search, cognition, restart and 
   await expect(
     page.getByRole("heading", { name: "密度与交通的关系", exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".synopsis")).toHaveText(
-    "我认为评估城市密度时需要同时考虑公共交通。",
+  await expect(page.locator(".raw-preview")).toContainText(
+    "原文城市密度需要结合公共交通考虑。",
   );
+  await page.getByRole("button", { name: "接受整理建议", exact: true }).click();
   await page.getByLabel("搜索历史").fill("公共交通");
   await expect(page.locator(".record")).toHaveCount(1);
   await page.getByLabel("搜索历史").fill("");
@@ -83,7 +84,7 @@ test("Windows desktop: immediate save, metadata, search, cognition, restart and 
   await page.getByRole("button", { name: "修改后接受", exact: true }).click();
   await page.getByLabel("当前看法").fill("我希望先检验交通承载能力");
   await page.getByRole("button", { name: "保存并接受" }).click();
-  await expect(page.locator(".cognition-panel > .viewpoint")).toHaveText(
+  await expect(page.locator(".resource-section > .viewpoint")).toHaveText(
     "我希望先检验交通承载能力",
   );
   const snapshot = (await page.evaluate(() => window.uki.view())) as AppView;

@@ -21,6 +21,7 @@ export class WebDav implements Dav {
   constructor(
     private settings: Settings,
     private password: string,
+    private observe?: (request: import("../src/shared").SyncDiagnostic) => void,
   ) {}
   async request(
     method: string,
@@ -89,50 +90,66 @@ export class WebDav implements Dav {
     ) {
       wireHeaders["If-Match"] = wireHeaders["If-Match"].slice(1, -1);
     }
-    const response = await fetch(url, {
-      method,
-      redirect: "error",
-      signal: AbortSignal.timeout(30000),
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${this.settings.davUser}:${this.password}`).toString("base64")}`,
-        ...(body !== undefined
-          ? { "Content-Type": "application/octet-stream" }
-          : {}),
-        ...wireHeaders,
-      },
-      body:
-        body === undefined
-          ? undefined
-          : typeof body === "string"
-            ? body
-            : Buffer.from(body),
-    });
-    if (response.status === 401 || response.status === 403)
-      throw new Error("坚果云授权失败，请检查账户和第三方应用密码");
-    if (response.status === 429) throw new Error("坚果云请求受限，请稍后同步");
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    if (response.body) {
-      const reader = response.body.getReader();
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        size += result.value.length;
-        if (size > 16 * 1024 * 1024) {
-          await reader.cancel();
-          throw new Error("云端文件超过 16 MB 安全读取上限");
+    const started = Date.now();
+    let observedStatus = 0;
+    try {
+      const response = await fetch(url, {
+        method,
+        redirect: "error",
+        signal: AbortSignal.timeout(30000),
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${this.settings.davUser}:${this.password}`).toString("base64")}`,
+          ...(body !== undefined
+            ? { "Content-Type": "application/octet-stream" }
+            : {}),
+          ...wireHeaders,
+        },
+        body:
+          body === undefined
+            ? undefined
+            : typeof body === "string"
+              ? body
+              : Buffer.from(body),
+      });
+      observedStatus = response.status;
+      if (response.status === 401 || response.status === 403)
+        throw new Error("坚果云授权失败，请检查账户和第三方应用密码");
+      if (response.status === 429)
+        throw new Error("坚果云请求受限，请稍后同步");
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      if (response.body) {
+        const reader = response.body.getReader();
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          size += result.value.length;
+          if (size > 16 * 1024 * 1024) {
+            await reader.cancel();
+            throw new Error("云端文件超过 16 MB 安全读取上限");
+          }
+          chunks.push(result.value);
         }
-        chunks.push(result.value);
       }
+      const tag = response.headers.get("etag");
+      const etag =
+        nutstore && tag && /^[A-Za-z0-9_-]{16,128}$/.test(tag)
+          ? `"${tag}"`
+          : tag;
+      return {
+        status: response.status,
+        etag,
+        body: Buffer.concat(chunks),
+      };
+    } finally {
+      this.observe?.({
+        method,
+        path,
+        status: observedStatus,
+        duration: Date.now() - started,
+        at: new Date().toISOString(),
+      });
     }
-    const tag = response.headers.get("etag");
-    const etag =
-      nutstore && tag && /^[A-Za-z0-9_-]{16,128}$/.test(tag) ? `"${tag}"` : tag;
-    return {
-      status: response.status,
-      etag,
-      body: Buffer.concat(chunks),
-    };
   }
 }
 const descriptor = z.object({
@@ -140,7 +157,7 @@ const descriptor = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const manifestSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   deviceId: z.string().uuid(),
   generation: z.number().int().nonnegative(),
   batches: z.array(descriptor).max(100000),
@@ -148,7 +165,7 @@ const manifestSchema = z.object({
 });
 type Manifest = z.infer<typeof manifestSchema>;
 const eventFileSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   events: z.array(z.unknown()).max(100),
 });
 const text = (r: DavResponse) =>
@@ -166,17 +183,51 @@ export class SyncEngine {
   lastSucceeded = false;
   private busy = false;
   private capability: boolean | null = null;
+  private prepared = false;
+  private checkedAt = 0;
+  private cacheId: string;
   constructor(
     private store: Store,
     private dav: Dav,
     private changed: () => void = () => {},
-  ) {}
+    cacheKey = "default-adapter-v2",
+  ) {
+    this.cacheId = "davCapability:" + hash(cacheKey);
+    try {
+      const cached = JSON.parse(store.getMeta(this.cacheId) ?? "null");
+      if (cached && Date.now() - cached.checkedAt < 30 * 86400000) {
+        this.prepared = cached.prepared;
+        this.capability = cached.capability;
+        this.checkedAt = cached.checkedAt;
+      }
+    } catch {
+      /* invalid cache is disposable */
+    }
+  }
+  private cache() {
+    this.store.setMeta(
+      this.cacheId,
+      JSON.stringify({
+        prepared: this.prepared,
+        capability: this.capability,
+        checkedAt: this.checkedAt,
+      }),
+    );
+  }
+  private invalidate() {
+    this.capability = null;
+    this.prepared = false;
+    this.checkedAt = 0;
+    this.cache();
+  }
   async prepare() {
+    if (this.prepared) return;
     for (const path of ["", "events", "imports"]) {
       const r = await this.dav.request("MKCOL", path);
       if (![201, 405].includes(r.status))
         throw new Error(`创建云端目录失败（HTTP ${r.status}）`);
     }
+    this.prepared = true;
   }
   private async manifest(): Promise<{
     value: Manifest | null;
@@ -185,10 +236,16 @@ export class SyncEngine {
     const r = await this.dav.request("GET", "manifest.json");
     if (r.status === 404) return { value: null, etag: null };
     ok(r, "读取恢复清单");
-    return { value: manifestSchema.parse(JSON.parse(text(r))), etag: r.etag };
+    const decoded = JSON.parse(text(r));
+    if (decoded.schemaVersion !== 1 && decoded.schemaVersion !== 2)
+      throw new Error("云端资料格式不受此版本支持，请升级软件后再同步");
+    return { value: manifestSchema.parse(decoded), etag: r.etag };
   }
   private async probe(): Promise<boolean> {
+    if (this.checkedAt && Date.now() - this.checkedAt >= 30 * 86400000)
+      this.capability = null;
     if (this.capability !== null) return this.capability;
+    await this.prepare();
     const path = `.condition-probe-${randomUUID()}.txt`;
     let latestEtag: string | null = null;
     try {
@@ -227,6 +284,8 @@ export class SyncEngine {
         text(verify) === "updated" &&
         strongEtag(verify.etag));
     } finally {
+      this.checkedAt = Date.now();
+      this.cache();
       // Probe path is unique to this invocation; cleanup never targets user data.
       await this.dav
         .request(
@@ -315,7 +374,7 @@ export class SyncEngine {
       }
       const file = `events/${chunk[0].event.id}_${chunk.at(-1)!.event.id}.json`;
       const content = JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         events: chunk.map((r) => r.event),
       });
       const digest = hash(content);
@@ -335,7 +394,7 @@ export class SyncEngine {
     if (!rows.length && remote.value && strongEtag(remote.etag))
       return { value: remote.value, etag: remote.etag };
     const next: Manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       deviceId: this.store.getMeta("deviceId")!,
       generation: (remote.value?.generation ?? 0) + 1,
       batches,
@@ -355,8 +414,10 @@ export class SyncEngine {
       !verify.value ||
       JSON.stringify(verify.value) !== JSON.stringify(next) ||
       !strongEtag(verify.etag)
-    )
+    ) {
+      this.invalidate();
       throw new Error("恢复清单发布结果无法确认，保留待同步任务");
+    }
     this.store.setMeta("syncedSeq", String(rows.at(-1)?.seq ?? localSeq));
     this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
     return { value: next, etag: verify.etag };
@@ -364,8 +425,7 @@ export class SyncEngine {
   private clearObserved() {
     this.store.appendMany(
       this.store
-        .snapshot()
-        .batches.filter((b) => b.status === "pending")
+        .activeBatches()
         .map((b) => this.store.event("inbox.cleared", { id: b.id })),
     );
   }
@@ -374,6 +434,15 @@ export class SyncEngine {
     this.busy = true;
     this.lastSucceeded = false;
     try {
+      if (
+        this.store.latestSeq() ===
+          Number(this.store.getMeta("syncedSeq") ?? 0) &&
+        this.store.getMeta("manifestHash")
+      ) {
+        this.status = "没有待上传变化";
+        this.lastSucceeded = true;
+        return;
+      }
       await this.prepare();
       const remote = await this.ensureOwner(await this.manifest());
       if (!(await this.probe())) {
@@ -384,6 +453,8 @@ export class SyncEngine {
       this.status = "思想数据已备份";
       this.lastSucceeded = true;
     } catch (e) {
+      if (e instanceof Error && /HTTP (404|405)|条件.*异常/.test(e.message))
+        this.invalidate();
       this.status = safeSyncError(e);
       throw new Error(this.status);
     } finally {
@@ -398,10 +469,10 @@ export class SyncEngine {
     this.status = "正在读取手机输入";
     this.changed();
     try {
-      await this.prepare();
       let remote = await this.ensureOwner(await this.manifest());
       let inbox = await this.dav.request("GET", "inbox.txt");
       if (inbox.status === 404) {
+        await this.prepare();
         const create = await this.dav.request("PUT", "inbox.txt", "", {
           "If-None-Match": "*",
         });
@@ -412,12 +483,9 @@ export class SyncEngine {
       let raw = decodeInbox(inbox.body);
       let batch = observeInbox(this.store, raw, inbox.etag);
       this.changed();
-      if (
-        !batch &&
-        this.store.snapshot().batches.some((b) => b.status === "pending")
-      )
-        this.clearObserved();
+      if (!batch && this.store.activeBatches().length > 0) this.clearObserved();
       if (batch) {
+        await this.prepare();
         const archived = await this.dav.request(
           "PUT",
           `imports/${batch.id}.txt`,
@@ -433,6 +501,17 @@ export class SyncEngine {
           if (text(existing) !== batch.snapshot)
             throw new Error("原文归档内容冲突");
         } else ok(archived, "归档原文");
+      }
+      if (
+        !batch &&
+        remote.value &&
+        this.store.getMeta("manifestHash") ===
+          hash(JSON.stringify(remote.value)) &&
+        this.store.latestSeq() === Number(this.store.getMeta("syncedSeq") ?? 0)
+      ) {
+        this.status = "已检查，没有新内容，无文件写入";
+        this.lastSucceeded = true;
+        return;
       }
       if (!(await this.probe())) {
         this.status =
@@ -450,6 +529,12 @@ export class SyncEngine {
           "If-Match": inbox.etag,
         });
         if (clear.status >= 200 && clear.status < 300) {
+          const confirmation = await this.dav.request("GET", "inbox.txt");
+          ok(confirmation, "核对条件清空");
+          if (text(confirmation) === raw) {
+            this.invalidate();
+            throw new Error("条件清空结果异常，已暂停并重新验证；原文归档保留");
+          }
           this.clearObserved();
           await this.publish(remote);
           this.status = "已同步，手机输入已归档并清空";
@@ -483,6 +568,8 @@ export class SyncEngine {
         : "思想数据已同步";
       this.lastSucceeded = !batch;
     } catch (e) {
+      if (e instanceof Error && /HTTP (404|405)|条件.*异常/.test(e.message))
+        this.invalidate();
       this.status = safeSyncError(e);
       throw new Error(this.status);
     } finally {
@@ -551,9 +638,12 @@ export class SyncEngine {
       this.store.setMeta("syncedSeq", String(this.store.latestSeq()));
       this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
       this.store.recoverInterrupted();
+      this.store.migrateV2();
       this.status = "已从云端恢复并接管；请停止旧电脑同步";
       this.lastSucceeded = true;
     } catch (e) {
+      if (e instanceof Error && /HTTP (404|405)|条件.*异常/.test(e.message))
+        this.invalidate();
       this.status = safeSyncError(e);
       throw new Error(this.status);
     } finally {

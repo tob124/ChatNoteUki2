@@ -24,7 +24,7 @@ export function observeInbox(
 ): InboxBatch | null {
   const parsed = splitInbox(raw);
   if (!parsed.length) return null;
-  const batches = store.snapshot().batches;
+  const batches = store.all<InboxBatch>("batches");
   const pending = batches.filter((b) => b.status === "pending").at(-1);
   if (pending?.snapshot === raw) return pending;
   let existing: InboxItem[] = [];

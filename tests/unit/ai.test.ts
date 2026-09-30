@@ -15,7 +15,7 @@ const config = {
   settings: () => settingsSchema.parse({}),
 };
 describe("bounded AI processing", () => {
-  it("generates title, synopsis, classification and reply in one call and reuses a new thread", async () => {
+  it("generates metadata in one call and proposes a thread without creating it", async () => {
     const s = open();
     s.capture({ raw: "城市密度" });
     s.capture({ raw: "同一问题的新想法" });
@@ -43,7 +43,12 @@ describe("bounded AI processing", () => {
     await ai.pump();
     await ai.pump();
     expect(calls).toBe(2);
+    expect(s.snapshot().threads).toHaveLength(0);
+    expect(s.snapshot().structures).toHaveLength(1);
+    expect(s.snapshot().structures[0].noteIds).toHaveLength(2);
+    s.resolveStructures([s.snapshot().structures[0].id], "accept");
     expect(s.snapshot().threads).toHaveLength(1);
+    expect(s.snapshot().notes[0].synopsis).toBe("");
     expect(s.snapshot().notes.every((n) => n.status === "done")).toBe(true);
     expect(s.snapshot().notes[0].raw).toBe("城市密度");
     expect(s.snapshot().usage).toHaveLength(2);

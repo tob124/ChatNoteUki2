@@ -7,13 +7,14 @@ const diskSchema = z.object({
   settings: settingsSchema,
   apiKey: z.string().optional(),
   davPassword: z.string().optional(),
+  revision: z.number().int().nonnegative().default(0),
 });
 export class Credentials {
   private disk: z.infer<typeof diskSchema>;
   constructor(private path: string) {
     this.disk = existsSync(path)
       ? diskSchema.parse(JSON.parse(readFileSync(path, "utf8")))
-      : { settings: settingsSchema.parse({}) };
+      : { settings: settingsSchema.parse({}), revision: 0 };
   }
   settings() {
     return { ...this.disk.settings };
@@ -34,6 +35,9 @@ export class Credentials {
   davPassword() {
     return this.decode(this.disk.davPassword);
   }
+  revision() {
+    return this.disk.revision;
+  }
   save(input: unknown, apiKey?: string, davPassword?: string) {
     const settings = settingsSchema.parse(input);
     const url = new URL(settings.davUrl);
@@ -50,6 +54,13 @@ export class Credentials {
     if (!safeStorage.isEncryptionAvailable())
       throw new Error("Windows 凭据加密暂不可用，未保存配置");
     const next = { ...this.disk, settings };
+    if (
+      davPassword !== undefined ||
+      settings.davUrl !== this.disk.settings.davUrl ||
+      settings.davUser !== this.disk.settings.davUser ||
+      settings.directory !== this.disk.settings.directory
+    )
+      next.revision++;
     if (apiKey !== undefined)
       next.apiKey = apiKey
         ? safeStorage.encryptString(apiKey).toString("base64")

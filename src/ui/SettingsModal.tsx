@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { AppView, Settings } from "../shared";
+import type { Bootstrap, Settings, UkiApi, InboxBatch } from "../shared";
 export function SettingsModal({
   data,
   onClose,
   onAction,
 }: {
-  data: AppView;
+  data: Bootstrap;
   onClose(): void;
   onAction(action: () => Promise<unknown>): void;
 }) {
@@ -18,10 +18,15 @@ export function SettingsModal({
     syncIntervalSeconds: data.settings.syncIntervalSeconds,
     dailyInputLimit: data.settings.dailyInputLimit,
     dailyOutputLimit: data.settings.dailyOutputLimit,
+    structureSensitivity: data.settings.structureSensitivity,
   });
   const [key, setKey] = useState("");
   const [password, setPassword] = useState("");
   const [confirmRestore, setConfirmRestore] = useState(false);
+  const [report, setReport] = useState<Awaited<
+      ReturnType<UkiApi["dataReport"]>
+    > | null>(null),
+    [imported, setImported] = useState<InboxBatch | null>(null);
   useEffect(() => {
     dialog.current?.showModal();
     return () => dialog.current?.close();
@@ -50,6 +55,26 @@ export function SettingsModal({
           </button>
         </header>
         <h3>DeepSeek</h3>
+        <label>
+          结构建议敏感度
+          <select
+            value={settings.structureSensitivity}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                structureSensitivity: e.target
+                  .value as Settings["structureSensitivity"],
+              })
+            }
+          >
+            {["保守", "均衡", "积极"].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+        <p className="hint">
+          只影响问题的新建、合并和层级建议，不按日期限额。历史整理共用每日预算，新记录和主动讨论优先。
+        </p>
         <label>
           API key{" "}
           <span className="muted">
@@ -221,41 +246,124 @@ export function SettingsModal({
             从云端恢复并接管
           </button>
         )}
+        <h3>当前资料库</h3>
         <p className="hint">
-          累计用量：输入{" "}
-          {data.usage.reduce((s, u) => s + u.input, 0).toLocaleString()} / 输出{" "}
-          {data.usage.reduce((s, u) => s + u.output, 0).toLocaleString()}{" "}
-          tokens。网络中断时供应商可能仍计费，显示用量仅含已返回结果。
+          版本 {data.version} · {data.counts.notes} 条记录
+          <br />
+          资料路径：{data.profile}
+          <br />
+          维护设备：{data.deviceId}
+          <br />
+          {data.pendingSync} 项变化待上传
         </p>
-        {data.reservations.length ? (
-          <p className="hint">
-            另有 {data.reservations.length}{" "}
-            次请求的计费无法确认，按单次最大用量计入当日预算；可查看 DeepSeek
-            账单核对。
-          </p>
-        ) : null}
-        {data.batches.length ? (
-          <details className="import-history">
-            <summary>手机导入记录与原文件快照</summary>
-            {data.batches
+        <details
+          onToggle={(e) => {
+            if (e.currentTarget.open)
+              onAction(async () => setReport(await window.uki.dataReport()));
+          }}
+        >
+          <summary>用量与导入凭据</summary>
+          {report && (
+            <>
+              <p className="hint">
+                今日实际输入 {report.usage.input} / 输出 {report.usage.output}{" "}
+                tokens · {report.usage.unknown} 次请求计费不明，预算已保守预留
+              </p>
+              {report.batches.map((b) => (
+                <p className="hint" key={b.id}>
+                  {new Date(b.createdAt).toLocaleString("zh-CN")} · {b.count} 条
+                  ·{" "}
+                  {
+                    {
+                      pending: "待归档清空",
+                      cleared: "已归档清空",
+                      conflict: "需核对改写",
+                    }[b.status]
+                  }
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onAction(async () =>
+                        setImported(await window.uki.importDetail(b.id)),
+                      )
+                    }
+                  >
+                    查看文件快照
+                  </button>
+                </p>
+              ))}
+              {report.before && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onAction(async () =>
+                      setReport(await window.uki.dataReport(report.before!)),
+                    )
+                  }
+                >
+                  更早导入
+                </button>
+              )}
+              {imported && (
+                <pre className="import-snapshot">{imported.snapshot}</pre>
+              )}
+            </>
+          )}
+        </details>
+        <p className="hint">
+          累计请求：读取 {data.statistics.read} 次 · 写入{" "}
+          {data.statistics.written} 次<br />
+          最近检查：
+          {data.statistics.lastCheck
+            ? new Date(data.statistics.lastCheck).toLocaleString("zh-CN")
+            : "尚未检查"}
+        </p>
+        <details>
+          <summary>同步诊断 · 最近 {data.diagnostics.length} 次请求</summary>
+          <p className="hint">{data.syncStatus}</p>
+          <div className="diagnostics">
+            {data.diagnostics
               .slice()
               .reverse()
-              .map((batch) => (
-                <details key={batch.id}>
-                  <summary>
-                    {new Date(batch.createdAt).toLocaleString("zh-CN")} ·{" "}
-                    {batch.status === "cleared"
-                      ? "已清空"
-                      : batch.status === "conflict"
-                        ? "内容冲突，需核对"
-                        : "已保存，待清空"}{" "}
-                    · {batch.items.length} 条
-                  </summary>
-                  <pre>{batch.snapshot}</pre>
-                </details>
+              .map((r, i) => (
+                <div key={i}>
+                  {new Date(r.at).toLocaleTimeString("zh-CN")} {r.method}{" "}
+                  {r.path || "目录"} · {r.status || "连接失败"} · {r.duration}ms
+                </div>
               ))}
-          </details>
-        ) : null}
+          </div>
+        </details>
+        <details>
+          <summary>AI 任务</summary>
+          {data.tasks.map((t) => (
+            <p className="hint" key={t.id}>
+              {t.kind === "organize"
+                ? "历史整理"
+                : t.kind === "recap"
+                  ? "回顾"
+                  : "认知分析"}{" "}
+              ·{" "}
+              {
+                {
+                  pending: "等待",
+                  running: "处理中",
+                  done: "完成",
+                  failed: "失败",
+                  budget: "预算等待",
+                }[t.status]
+              }{" "}
+              {t.error}
+              {["failed", "budget"].includes(t.status) && (
+                <button
+                  type="button"
+                  onClick={() => onAction(() => window.uki.retryTask(t.id))}
+                >
+                  重试任务
+                </button>
+              )}
+            </p>
+          ))}
+        </details>
       </form>
     </dialog>
   );

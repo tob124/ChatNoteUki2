@@ -21,8 +21,7 @@ try {
       const view = await page.evaluate(() => window.uki.view());
       if (
         view.notes.length === count &&
-        ["done", "failed"].includes(view.notes.at(-1).status) &&
-        view.aiStatus.startsWith("已处理")
+        ["done", "failed"].includes(view.notes.at(-1).status)
       )
         return view;
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -50,6 +49,12 @@ try {
   const first = await waitForNotes(1);
   if (first.notes[0].status !== "done")
     throw new Error(first.notes[0].error || "First note failed");
+  if (first.structures[0])
+    await page.evaluate(
+      (id) => window.uki.structure([id], "accept"),
+      first.structures[0].id,
+    );
+  const accepted = await page.evaluate(() => window.uki.view());
   await page.evaluate(() =>
     window.uki.capture({
       raw: "关于城市密度，我想先比较轨道交通容量与居民平均通勤时间，而不是只看人口密度。",
@@ -60,7 +65,7 @@ try {
     throw new Error(second.notes[1].error || "Second note failed");
   await page.evaluate(
     (thread) => window.uki.propose(thread, "deepseek-flash"),
-    first.notes[0].threadId,
+    accepted.notes[0].threadId,
   );
   const result = await page.evaluate(() => window.uki.view());
   const report = {
@@ -70,7 +75,9 @@ try {
     output: result.usage.reduce((s, u) => s + u.output, 0),
     titles: result.notes.map((n) => n.title),
     synopses: result.notes.map((n) => n.synopsis),
-    threadReused: result.notes[0].threadId === result.notes[1].threadId,
+    threadReused:
+      !!result.notes[0].threadId &&
+      result.notes[0].threadId === result.notes[1].threadId,
     proposalCount: result.proposals.length,
     cognitionUnchanged: result.cognitions.length === 0,
   };
