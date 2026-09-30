@@ -8,6 +8,7 @@ export interface Completion {
   content: string;
   input: number;
   output: number;
+  finishReason?: string | null;
 }
 export interface AiTransport {
   complete(
@@ -61,7 +62,12 @@ export class DeepSeek implements AiTransport {
     const data = z
       .object({
         choices: z
-          .array(z.object({ message: z.object({ content: z.string() }) }))
+          .array(
+            z.object({
+              message: z.object({ content: z.string().nullable() }),
+              finish_reason: z.string().nullable().optional(),
+            }),
+          )
           .min(1),
         usage: z.object({
           prompt_tokens: z.number().int().nonnegative(),
@@ -70,9 +76,10 @@ export class DeepSeek implements AiTransport {
       })
       .parse(await response.json());
     return {
-      content: data.choices[0].message.content,
+      content: data.choices[0].message.content ?? "",
       input: data.usage.prompt_tokens,
       output: data.usage.completion_tokens,
+      finishReason: data.choices[0].finish_reason,
     };
   }
 }

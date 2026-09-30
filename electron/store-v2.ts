@@ -1243,6 +1243,11 @@ export class Store {
           )
           .get()?.n,
       ),
+      recaps: Number(
+        this.db
+          .prepare("SELECT COUNT(*) n FROM entities_v2 WHERE kind='recaps'")
+          .get()?.n ?? 0,
+      ),
     };
   }
   private withDiscussions(ids: string[]): string[] {
@@ -1358,10 +1363,13 @@ export class Store {
       select = notes;
       args = c.args;
     }
-    const total = Number(
-      this.db.prepare(`SELECT COUNT(*) AS n FROM (${select})`).get(...args)
-        ?.n ?? 0,
-    );
+    const aggregate = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n,coalesce(MAX(seq),0) newest FROM (${select})`,
+      )
+      .get(...args)!;
+    const total = Number(aggregate.n),
+      newestSeq = Number(aggregate.newest);
     const rows = this.db
         .prepare(
           `SELECT * FROM (${select}) WHERE seq<? ORDER BY seq DESC LIMIT 31`,
@@ -1405,6 +1413,7 @@ export class Store {
       before: rows.length > 30 ? Number(visible[0].seq) : null,
       latest: this.latestSeq(),
       total,
+      newestSeq,
     };
   }
   search(query: string, includeReply = true): Note[] {

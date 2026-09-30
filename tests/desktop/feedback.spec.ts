@@ -5,7 +5,8 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
   const folder = resolve(".local", `feedback-${Date.now()}`);
   mkdirSync(folder, { recursive: true });
   const app = await electron.launch({
-    args: ["."],
+    executablePath: process.env.UKI_TEST_EXE,
+    args: process.env.UKI_TEST_EXE ? [] : ["."],
     cwd: process.cwd(),
     env: { ...process.env, UKI_DATA_DIR: folder },
   });
@@ -28,7 +29,7 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
           context = JSON.parse(body.messages[1].content),
           instructions = body.messages[0].content;
         if (
-          instructions.includes("输出 expressed") ||
+          instructions.includes('"expressed"') ||
           instructions.includes("输出 after")
         ) {
           runtime.analysisInputs.push(context);
@@ -138,9 +139,11 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
               evidenceIds,
             }
           : {
-              expressed: `${job.context.selectedThread.id}（王者匹配机制是否公平）值得观察`,
-              possible: "尚无结论",
-              questions: "还需哪些证据？",
+              expressed: [
+                `${job.context.selectedThread.id}（王者匹配机制是否公平）值得观察`,
+              ],
+              possible: ["尚无结论"],
+              questions: ["还需哪些证据？"],
               evidenceIds,
             };
         job.resolve(
@@ -158,6 +161,7 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
       panel.getByText("生成完成，结果已保存", { exact: true }),
     ).toBeVisible();
     await expect(panel.locator(".recap")).toBeVisible();
+    await page.getByLabel("搜索历史").fill("不会命中结果");
     await panel.getByRole("button", { name: "查看回顾", exact: true }).click();
     await expect(panel).toBeHidden();
     await expect(page.locator(".main-pane .recap")).toBeVisible();
@@ -200,6 +204,19 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     expect(
       await app.evaluate(() => (globalThis as any).analysisInputs.length),
     ).toBe(3);
+    await page.getByRole("button", { name: "收起资料", exact: true }).click();
+    await page.getByRole("button", { name: /^回顾/ }).click();
+    await expect(page.locator(".main-pane .recap h2")).toHaveText(
+      "王者匹配机制是否公平 · 回顾",
+    );
+    await expect(
+      page.getByText("这里汇集已生成的线程回顾", { exact: false }),
+    ).toBeVisible();
+    await expect(page.getByLabel("写下想法")).toHaveCount(0);
+    await page.getByRole("button", { name: "进入问题", exact: true }).click();
+    await expect(page.locator(".main-header h1")).toHaveText(
+      "王者匹配机制是否公平",
+    );
     await page.screenshot({ path: join(folder, "feedback.png") });
   } finally {
     await app.close();

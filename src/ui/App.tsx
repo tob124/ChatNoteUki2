@@ -70,6 +70,8 @@ export function App() {
     [collapsed, setCollapsed] = useState<string[]>([]),
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const seenHead = useRef<{ scope: string; seq: number } | null>(null);
   useEffect(() => {
     if (!resultToShow || !page) return;
     const element = scroll.current?.querySelector<HTMLElement>(
@@ -126,10 +128,24 @@ export function App() {
       workspace === live.current.workspace &&
       state.before === live.current.state.before
     ) {
+      const scope = JSON.stringify([workspace, query, searchIn, aiFilter]);
+      if (seenHead.current?.scope !== scope) setNewContent(false);
+      if (
+        seenHead.current?.scope === scope &&
+        result.newestSeq > seenHead.current.seq &&
+        (state.before ||
+          date ||
+          (scroll.current?.scrollHeight ?? 0) -
+            (scroll.current?.scrollTop ?? 0) -
+            (scroll.current?.clientHeight ?? 0) >
+            180)
+      )
+        setNewContent(true);
+      seenHead.current = { scope, seq: result.newestSeq };
       setPage(result);
       setLoading(false);
     }
-  }, [ready, workspace, state.before, query, searchIn, aiFilter, date]);
+  }, [ready, workspace, state.before, query, searchIn, aiFilter, date, reload]);
   const loadResources = useCallback(async () => {
     const version = ++resourceVersion.current;
     const result = await window.uki.resources(threadId);
@@ -147,15 +163,6 @@ export function App() {
     if (scope !== live.current.workspace) return;
     if (lastSeq.current !== next.latest) {
       lastSeq.current = next.latest;
-      if (
-        live.current.state.before ||
-        (scroll.current?.scrollHeight ?? 0) -
-          (scroll.current?.scrollTop ?? 0) -
-          (scroll.current?.clientHeight ?? 0) >
-          180
-      ) {
-        setNewContent(true);
-      }
       await Promise.all([loadPage(), loadResources()]);
     }
   }, [loadPage, loadResources]);
@@ -328,6 +335,7 @@ export function App() {
     patch({ before: undefined, scroll: 0, anchor: undefined, date: undefined });
     setDate("");
     setNewContent(false);
+    setReload((n) => n + 1);
   };
   const capture = async () => {
     if (!state.draft.trim() || saving) return;
@@ -376,6 +384,9 @@ export function App() {
         panel: "closed",
       });
       setDate("");
+      setQuery("");
+      setAiFilter("all");
+      setReload((n) => n + 1);
       setResultToShow(task.resultId);
       setNewContent(false);
     });
@@ -445,7 +456,7 @@ export function App() {
                 ["all", "全部记录", data.counts.notes],
                 ["pending", "待整理", data.counts.unassigned],
                 ["organize", "整理建议", data.counts.structures],
-                ["review", "回顾", null],
+                ["review", "回顾", data.counts.recaps],
               ] as const
             ).map(([id, label, count]) => (
               <button
@@ -571,39 +582,45 @@ export function App() {
             </button>
           </div>
         </header>
-        <div className="search-row">
-          <input
-            type="search"
-            aria-label="搜索历史"
-            placeholder="搜索原文、标题或摘要"
-            value={query}
-            maxLength={200}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              patch({ before: undefined });
-            }}
-          />
-          <select
-            aria-label="搜索范围"
-            value={searchIn}
-            onChange={(e) => setSearchIn(e.target.value as typeof searchIn)}
-          >
-            <option value="original">原文与派生信息</option>
-            <option value="reply">AI 回应</option>
-          </select>
-          <select
-            aria-label="AI 状态筛选"
-            value={aiFilter}
-            onChange={(e) => {
-              setAiFilter(e.target.value as typeof aiFilter);
-              patch({ before: undefined });
-            }}
-          >
-            <option value="all">全部状态</option>
-            <option value="pending">AI 待处理</option>
-            <option value="failed">AI 失败</option>
-          </select>
-        </div>
+        {workspace === "review" ? (
+          <p className="review-intro hint">
+            这里汇集已生成的线程回顾，附原文引用。生成新回顾请进入具体问题，在右侧点击「生成线程回顾」。
+          </p>
+        ) : (
+          <div className="search-row">
+            <input
+              type="search"
+              aria-label="搜索历史"
+              placeholder="搜索原文、标题或摘要"
+              value={query}
+              maxLength={200}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                patch({ before: undefined });
+              }}
+            />
+            <select
+              aria-label="搜索范围"
+              value={searchIn}
+              onChange={(e) => setSearchIn(e.target.value as typeof searchIn)}
+            >
+              <option value="original">原文与派生信息</option>
+              <option value="reply">AI 回应</option>
+            </select>
+            <select
+              aria-label="AI 状态筛选"
+              value={aiFilter}
+              onChange={(e) => {
+                setAiFilter(e.target.value as typeof aiFilter);
+                patch({ before: undefined });
+              }}
+            >
+              <option value="all">全部状态</option>
+              <option value="pending">AI 待处理</option>
+              <option value="failed">AI 失败</option>
+            </select>
+          </div>
+        )}
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
@@ -762,9 +779,23 @@ export function App() {
                   key={item.value.id}
                   value={item.value as Recap}
                   onEvidence={evidence}
+                  threadTitle={
+                    data.threads.find(
+                      (t) => t.id === (item.value as Recap).threadId,
+                    )?.title
+                  }
+                  onThread={
+                    workspace === "review"
+                      ? (id) => void navigate(id)
+                      : undefined
+                  }
                 />
               ),
             )
+          ) : loading ? (
+            <div className="empty-state" role="status">
+              <p>正在加载记录…</p>
+            </div>
           ) : (
             <div className="empty-state">
               <div className="empty-symbol">✧</div>
@@ -773,7 +804,9 @@ export function App() {
                   ? "还没找到相关记录"
                   : workspace === "organize"
                     ? "留出时间，慢慢整理"
-                    : "一个问题，可以想很久"}
+                    : workspace === "review"
+                      ? "还没有生成的回顾"
+                      : "一个问题，可以想很久"}
               </h2>
               <p>
                 {query
@@ -782,7 +815,9 @@ export function App() {
                     ? "归属不确定的记录在这里。AI 失败状态可单独筛选。"
                     : workspace === "organize"
                       ? "后台整理会提出候选建议，确认后才更改归属和结构。"
-                      : "想到什么，先写下来。原话、变化和依据都能留住。"}
+                      : workspace === "review"
+                        ? "进入一个具体问题，在右侧点击「生成线程回顾」。成功生成后会保存在这里；等待和失败的任务不会变成回顾条目。"
+                        : "想到什么，先写下来。原话、变化和依据都能留住。"}
               </p>
               {!data.settings.hasApiKey && (
                 <button onClick={() => setSettings(true)}>配置 DeepSeek</button>
@@ -790,53 +825,60 @@ export function App() {
             </div>
           )}
         </div>
-        <div className="composer">
-          <div className="composer-tabs">
-            <strong className="section-label">记录新想法</strong>
-            <span>
-              {"归入：" +
-                (thread && !thread.archived ? thread.title : "自动整理")}
-            </span>
-          </div>
-          {state.discussionDraftMoved && (
-            <p className="hint">
-              讨论草稿已移到原笔记的“回复 AI”中。
-              <button onClick={() => patch({ discussionDraftMoved: false })}>
-                知道了
+        {(workspace !== "review" || !!state.draft) && (
+          <div className="composer">
+            {workspace === "review" && (
+              <p className="hint">
+                这是此页保存的未发送草稿。保存为新想法后，可在「全部记录」查看。
+              </p>
+            )}
+            <div className="composer-tabs">
+              <strong className="section-label">记录新想法</strong>
+              <span>
+                {"归入：" +
+                  (thread && !thread.archived ? thread.title : "自动整理")}
+              </span>
+            </div>
+            {state.discussionDraftMoved && (
+              <p className="hint">
+                讨论草稿已移到原笔记的“回复 AI”中。
+                <button onClick={() => patch({ discussionDraftMoved: false })}>
+                  知道了
+                </button>
+              </p>
+            )}
+            <textarea
+              id="capture"
+              aria-label="写下想法"
+              placeholder="想到什么，直接写下来。回复 AI 请打开笔记卡片。"
+              value={state.draft}
+              maxLength={50000}
+              onChange={(e) => patch({ draft: e.target.value })}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  (e.ctrlKey || e.metaKey) &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  e.preventDefault();
+                  void capture();
+                }
+              }}
+            />
+            <div className="composer-footer">
+              <span>
+                {saving ? "保存原文…" : "草稿仅本机保存 · Ctrl + Enter"}
+              </span>
+              <button
+                className="primary"
+                disabled={!state.draft.trim() || saving}
+                onClick={() => void capture()}
+              >
+                保存想法
               </button>
-            </p>
-          )}
-          <textarea
-            id="capture"
-            aria-label="写下想法"
-            placeholder="想到什么，直接写下来。回复 AI 请打开笔记卡片。"
-            value={state.draft}
-            maxLength={50000}
-            onChange={(e) => patch({ draft: e.target.value })}
-            onKeyDown={(e) => {
-              if (
-                e.key === "Enter" &&
-                (e.ctrlKey || e.metaKey) &&
-                !e.nativeEvent.isComposing
-              ) {
-                e.preventDefault();
-                void capture();
-              }
-            }}
-          />
-          <div className="composer-footer">
-            <span>
-              {saving ? "保存原文…" : "草稿仅本机保存 · Ctrl + Enter"}
-            </span>
-            <button
-              className="primary"
-              disabled={!state.draft.trim() || saving}
-              onClick={() => void capture()}
-            >
-              保存想法
-            </button>
+            </div>
           </div>
-        </div>
+        )}
         <footer className="sync-status" role="status" title={data.syncStatus}>
           {data.aiStatus}
           <span>{data.syncStatus}</span>

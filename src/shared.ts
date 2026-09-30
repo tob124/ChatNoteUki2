@@ -151,6 +151,7 @@ export interface WorkspacePage {
   newerBefore: number | null;
   latest: number;
   total: number;
+  newestSeq: number;
 }
 export interface WorkspaceState {
   draft: string;
@@ -181,6 +182,7 @@ export interface Bootstrap {
     unassigned: number;
     failed: number;
     structures: number;
+    recaps: number;
   };
   settings: SettingsView;
   syncStatus: string;

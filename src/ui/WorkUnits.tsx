@@ -352,14 +352,21 @@ export function StructureSuggestion({
 export function RecapContent({
   value,
   onEvidence,
+  threadTitle,
+  onThread,
 }: {
   value: Recap;
   onEvidence(r: Evidence): void;
+  threadTitle?: string;
+  onThread?(threadId: string): void;
 }) {
   return (
     <article className="recap work-unit" data-unit={value.id}>
       <span className="eyebrow">引用回顾 · {dateLabel(value.createdAt)}</span>
-      <h2>这段时间的思考</h2>
+      <h2>{threadTitle ? `${threadTitle} · 回顾` : "这段时间的思考"}</h2>
+      {onThread && (
+        <button onClick={() => onThread(value.threadId)}>进入问题</button>
+      )}
       <p className="hint">
         {dateLabel(value.start)} — {dateLabel(value.end)} · 问题内共{" "}
         {value.total} 条，实际取样 {value.sampled} 条 · 基础认知 v
@@ -368,9 +375,9 @@ export function RecapContent({
       <h4>用户明确表达</h4>
       <p>{value.expressed}</p>
       <h4>AI 推测 · 待核对</h4>
-      <p className="inference">{value.possible}</p>
+      <p className="inference">{value.possible || "本次未提出新的推测。"}</p>
       <h4>继续追问</h4>
-      <p>{value.questions}</p>
+      <p>{value.questions || "本次未提出新的追问。"}</p>
       <EvidenceLinks refs={value.evidence} onEvidence={onEvidence} />
     </article>
   );
