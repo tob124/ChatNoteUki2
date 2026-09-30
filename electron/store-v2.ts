@@ -229,6 +229,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
    CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,body TEXT NOT NULL);
+   CREATE INDEX IF NOT EXISTS events_note_completion ON events(json_extract(body,'$.payload.id'),json_extract(body,'$.type'),seq);
    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS entities_v2(kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,seq INTEGER NOT NULL,createdAt TEXT NOT NULL,PRIMARY KEY(kind,id));
    CREATE INDEX IF NOT EXISTS entities_v2_seq ON entities_v2(kind,seq);
@@ -581,7 +582,8 @@ export class Store {
               : p.result.synopsis;
         n.reply = p.result.reply;
         if (n.processing && p.usage) n.processing.usage = p.usage;
-        if (!n.assignmentLocked) n.threadId = p.threadId;
+        if (n.parentNoteId) n.threadId = this.note(n.parentNoteId).threadId;
+        else if (!n.assignmentLocked) n.threadId = p.threadId;
         n.status = "done";
         n.error = null;
         save(n);
@@ -589,7 +591,9 @@ export class Store {
       }
       case "note.moved": {
         if (p.threadId) this.requireThread(p.threadId, true);
-        for (const id of this.withDiscussions([p.id])) {
+        for (const id of this.withDiscussions([
+          this.note(p.id).parentNoteId ?? p.id,
+        ])) {
           const n = this.note(id);
           n.threadId = p.threadId;
           n.assignmentRevision = (n.assignmentRevision ?? 0) + 1;
@@ -1069,7 +1073,7 @@ export class Store {
     id: string = randomUUID(),
   ): Note {
     const v = captureSchema.parse(rawInput);
-    if (v.mode === "discussion" && (!v.threadId || !v.parentNoteId))
+    if (v.mode === "discussion" && !v.parentNoteId)
       throw new Error("请从一条笔记发起讨论");
     if (v.threadId) this.requireThread(v.threadId, true);
     return {
@@ -1126,14 +1130,27 @@ export class Store {
         )
         .all(id)
         .map((r) => JSON.parse(String(r.body)) as NoteRevision),
-      discussions: this.db
-        .prepare(
-          "SELECT id FROM note_query_v2 WHERE parentNoteId=? ORDER BY seq DESC LIMIT 30",
-        )
-        .all(id)
-        .map((r) => this.note(String(r.id)))
-        .reverse(),
+      discussions: this.discussions(id),
     };
+  }
+  discussions(id: string, limit = 30, beforeId: string | null = null): Note[] {
+    return this.db
+      .prepare(
+        "SELECT id FROM note_query_v2 WHERE parentNoteId=? AND (? IS NULL OR seq<(SELECT seq FROM note_query_v2 WHERE id=?)) ORDER BY seq DESC LIMIT ?",
+      )
+      .all(id, beforeId, beforeId, limit)
+      .map((r) => this.note(String(r.id)))
+      .reverse();
+  }
+  replyAtVersion(id: string, revision: number): string | null {
+    const n = this.note(id);
+    if ((n.revision ?? 0) === revision) return n.reply;
+    const row = this.db
+      .prepare(
+        "SELECT body FROM events WHERE json_extract(body,'$.payload.id')=? AND json_extract(body,'$.type')='note.completed' AND coalesce(json_extract(body,'$.payload.inputRevision'),0)=? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(id, revision);
+    return row ? JSON.parse(String(row.body)).payload.result.reply : null;
   }
   counts() {
     return {

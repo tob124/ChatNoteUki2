@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { NoteReply } from "./NoteReply";
 import {
   isShortNote,
   type Note,
@@ -40,6 +41,13 @@ export function RecordCard({
   const [editing, setEditing] = useState<"body" | "title" | null>(null),
     [draft, setDraft] = useState("");
   const [error, setError] = useState("");
+  const [replying, setReplying] = useState(false);
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const form = card.current?.querySelector(".note-reply-form");
+    if (replying && form?.contains(document.activeElement))
+      form.scrollIntoView({ block: "nearest" });
+  }, [detail, replying]);
   useEffect(() => {
     if (!expanded) return;
     let active = true;
@@ -63,6 +71,7 @@ export function RecordCard({
   const thread = threads.find((t) => t.id === note.threadId);
   return (
     <article
+      ref={card}
       className={`record ${expanded ? "expanded" : ""}`}
       id={`note-${note.id}`}
       data-unit={note.id}
@@ -155,7 +164,7 @@ export function RecordCard({
                 </div>
               )}
               {detail.discussions.length > 0 && (
-                <details>
+                <details open={replying ? true : undefined}>
                   <summary>
                     关联讨论 · 最近 {detail.discussions.length} 条
                   </summary>
@@ -199,6 +208,7 @@ export function RecordCard({
                 </p>
               )}
               {full.error && <p className="error">{full.error}</p>}
+              {replying && <NoteReply note={full} onAction={onAction} />}
               <div className="record-actions">
                 {full.status === "failed" && (
                   <button
@@ -208,10 +218,16 @@ export function RecordCard({
                   </button>
                 )}
                 <button
+                  onClick={() => setReplying((value) => !value)}
+                  disabled={thread?.archived}
+                >
+                  {replying ? "收起回复" : "回复 AI"}
+                </button>
+                <button
                   onClick={() => onDiscuss(full)}
                   disabled={!full.threadId || thread?.archived}
                 >
-                  继续讨论
+                  在工作区讨论
                 </button>
                 <button
                   onClick={() => {

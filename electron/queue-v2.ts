@@ -24,6 +24,7 @@ export function buildContext(
   threadId: string | null,
   excludeId: string | null = null,
   parent: Evidence | null = null,
+  includeDialogue = false,
 ) {
   const words = [
     ...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(raw),
@@ -71,6 +72,11 @@ export function buildContext(
       revision: number;
       createdAt: string;
       truncated: boolean;
+      mode: Note["mode"];
+      parentNoteId: string | null;
+      parentRevision?: number;
+      aiReply?: string | null;
+      aiReplyTruncated?: boolean;
     }[],
   };
   if (Buffer.byteLength(JSON.stringify(payload) + system) > 6200)
@@ -79,28 +85,63 @@ export function buildContext(
     );
   const seen = new Set<string>();
   const origin = parent ? store.note(parent.noteId) : null;
+  const recent = store.recent(threadId, 6).filter((n) => n.id !== excludeId);
+  const conversation = parent
+    ? store.discussions(parent.noteId, 10, excludeId)
+    : [];
+  const conversationOrder = new Map(
+    [...(origin ? [origin] : []), ...conversation].map((n, index) => [
+      n.id,
+      index,
+    ]),
+  );
+  const ancestors = includeDialogue
+    ? recent
+        .filter((n) => n.parentNoteId)
+        .map((n) => store.note(n.parentNoteId!))
+    : [];
   for (const n of [
     ...(origin ? [origin] : []),
-    ...store.recent(threadId, 6),
-    ...related,
+    ...(parent ? conversation.slice().reverse() : recent),
+    ...ancestors,
+    ...(parent ? [] : related),
   ]) {
     if (n.id === excludeId || seen.has(n.id)) continue;
     seen.add(n.id);
     const original =
       parent?.noteId === n.id ? store.revision(n.id, parent.revision) : null;
     const text = original?.raw ?? n.currentRaw ?? n.raw;
+    const revision = original?.revision ?? n.revision ?? 0;
+    const reply =
+      parent || includeDialogue
+        ? store.replyAtVersion(n.id, revision)
+        : undefined;
     payload.history.push({
       id: n.id,
       raw: text.slice(0, 600),
       title: n.title,
-      revision: original?.revision ?? n.revision ?? 0,
+      revision,
       createdAt: n.createdAt,
       truncated: text.length > 600,
+      mode: n.mode,
+      parentNoteId: n.parentNoteId ?? null,
+      parentRevision: n.parentRevision,
+      ...(reply !== undefined
+        ? {
+            aiReply: reply?.slice(0, 800) ?? null,
+            aiReplyTruncated: !!reply && reply.length > 800,
+          }
+        : {}),
     });
     if (Buffer.byteLength(JSON.stringify(payload) + system) > 6200)
       payload.history.pop();
     if (payload.history.length >= 10) break;
   }
+  payload.history.sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) ||
+      (conversationOrder.get(a.id) ?? 0) - (conversationOrder.get(b.id) ?? 0),
+  );
   return JSON.stringify(payload);
 }
 class BudgetError extends Error {}
@@ -188,7 +229,8 @@ export class AiQueue {
     this.busy = true;
     try {
       while (!this.stopping) {
-        await new Promise<void>(resolve=>setImmediate(resolve));if(this.stopping)break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (this.stopping) break;
         const interactive = this.store.nextTask("interactive", day());
         if (interactive) {
           await this.runTask(interactive);
@@ -265,7 +307,10 @@ export class AiQueue {
         : aiNoteSchema
     ).parse(
       await this.request(
-        instructions,
+        instructions +
+          (n.mode === "discussion"
+            ? "针对 origin 起始笔记的这次回复继续对话；history 中 raw 是用户原话，aiReply 是之前 AI 的回答。不要跳到其他笔记，不重复另起话题，不给讨论另建线程。AI 的建议不能视为用户认同。"
+            : ""),
         context,
         n.model,
         n.mode === "note" ? 800 : 2200,
@@ -277,9 +322,11 @@ export class AiQueue {
     if (result.threadId && !active.some((t) => t.id === result.threadId))
       throw new Error("AI 返回了不存在的线程，未采用分类");
     const live = this.store.note(n.id);
-    const threadId = live.assignmentLocked
-      ? live.threadId
-      : (n.threadId ?? result.threadId);
+    const threadId = n.parentNoteId
+      ? this.store.note(n.parentNoteId).threadId
+      : live.assignmentLocked
+        ? live.threadId
+        : (n.threadId ?? result.threadId);
     const events = [
       this.store.event("note.completed", {
         id: n.id,
@@ -289,7 +336,12 @@ export class AiQueue {
         usage: this.lastUsage,
       }),
     ];
-    if (!threadId && result.newThreadTitle && !live.assignmentLocked) {
+    if (
+      n.mode === "note" &&
+      !threadId &&
+      result.newThreadTitle &&
+      !live.assignmentLocked
+    ) {
       const proposal = this.store.prepareStructure({
         kind: "create",
         title: result.newThreadTitle,
@@ -345,6 +397,9 @@ export class AiQueue {
               this.store,
               "请回看这个问题的判断与变化",
               task.threadId,
+              null,
+              null,
+              true,
             );
       const bases = {
         threads: Object.fromEntries(
@@ -437,7 +492,7 @@ export class AiQueue {
         ]);
       } else if (task.kind === "cognition") {
         const instructions =
-          "输出 after（viewpoint、reasons、uncertainties、questions、decisions）、reason、evidenceIds。每项简短，只引用输入 history 中的真实 UUID，明确不确定性。";
+          "输出 after（viewpoint、reasons、uncertainties、questions、decisions）、reason、evidenceIds。history 包含笔记与关联讨论，raw 是用户表达，aiReply 是 AI 回答，只作为对话背景，不代表用户观点或认同。每项简短，只引用输入 history 中的真实 UUID，明确不确定性。";
         const result = z
           .object({
             after: stateContentSchema,
@@ -484,7 +539,7 @@ export class AiQueue {
           })
           .parse(
             await this.request(
-              "输出 expressed（用户明确表达）、possible（可能变化及不确定性）、questions（继续追问）、evidenceIds。只引用输入 history，不宣称已覆盖全部历史。",
+              "输出 expressed（用户明确表达）、possible（可能变化及不确定性）、questions（继续追问）、evidenceIds。history 包含笔记与关联讨论，raw 是用户原话，aiReply 是 AI 回答。把对话纳入回顾，但仅将用户明确说过的内容归入 expressed，AI 的说法不等于用户认同。只引用输入 history，不宣称已覆盖全部历史。",
               context,
               task.model,
               1500,
