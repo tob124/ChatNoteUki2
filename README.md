@@ -117,7 +117,9 @@ npm exec -- esbuild scripts/configure-webdav.ts --bundle --platform=node --forma
 npm exec -- electron .local/configure-webdav.cjs
 ```
 
-GitHub Actions 在 Windows 上运行类型检查、单元测试、桌面测试和安装包构建，生成可下载的安装包 artifact。首次原型安装包未签名；应用升级暂为手动安装，不自动删除数据。
+GitHub Actions 在每次推送 `main`、`codex/**` 或提交 PR 时运行类型检查、单元测试、桌面测试和安装包构建，生成可下载的安装包 artifact。`main` 的检查全部通过后，自动上传安装包与 `SHA256SUMS.txt` 到 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases)，核验服务器 SHA-256 后正式发布；开发分支和 PR 不发布。也可在 Actions 页面选择 `main` 手动运行。
+
+自动 Release 标签使用 `v版本-main.提交前12位`，同版本的不同提交各自保留安装包，不覆盖已有 `v0.2.1` 等正式版本；重跑同一提交不会替换已发布的文件。上传失败保留草稿，可重跑恢复。只有仍为 `main` 最新提交的构建才标为 Latest，防止较慢的旧构建覆盖新构建入口。正常主线提交不要使用 `[skip ci]`，否则 GitHub 会跳过整次构建。发布仅使用 GitHub 自动提供的临时 token，无须配置个人 token 或应用密钥。实现依据 [GitHub token 权限文档](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token)。安装包未签名；应用升级暂为手动安装，不自动删除数据。
 
 `scripts/verify-webdav-v2.ts` 使用本机已保存的 DPAPI 凭据在唯一 `verify-v2-*` 子目录验证 v2 导入、更正、任务恢复及空闲零写入，随后清理本次目录；不保存配置、不读写正式入口、不调用 AI。
 
