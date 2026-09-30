@@ -69,6 +69,9 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
     expect(await page.locator(".records").evaluate((el) => el.scrollTop)).toBe(
       position,
     );
+    // On small CI displays the reference panel is an overlay. Close it before
+    // operating covered timeline controls, just as a user does.
+    await page.getByRole("button", { name: "收起资料", exact: true }).click();
     await page.getByRole("button", { name: "较新记录", exact: true }).click();
     await expect(page.locator(".record h2").last()).toContainText(
       "分页笔记 63",
@@ -109,6 +112,10 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
         .locator(".main-pane")
         .evaluate((el) => el.getBoundingClientRect().width),
     ).toBeGreaterThanOrEqual(480);
+    await page.getByRole("button", { name: "资料", exact: true }).click();
+    await expect(
+      page.getByRole("complementary", { name: "备查资料" }),
+    ).toBeVisible();
     await page.screenshot({ path: join(folder, "narrow.png") });
   } finally {
     await app.close();
