@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-electron/
+release/
+test-results/
+playwright-report/
+.local/
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.pem
+*.key
+coverage/

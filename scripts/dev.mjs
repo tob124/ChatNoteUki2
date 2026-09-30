@@ -1,0 +1,15 @@
+import { spawn } from "node:child_process";
+import electron from "electron";
+import { createServer } from "vite";
+await import("./build-electron.mjs");
+const server = await createServer();
+await server.listen();
+const child = spawn(electron, ["."], {
+  stdio: "inherit",
+  env: { ...process.env, UKI_DEV_URL: "http://127.0.0.1:5173" },
+  windowsHide: true,
+});
+child.on("exit", async (code) => {
+  await server.close();
+  process.exit(code ?? 0);
+});

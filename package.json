@@ -1,0 +1,63 @@
+{
+  "name": "chatnoteuki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A personal Windows thought companion with durable history and Nutstore WebDAV sync",
+  "author": "tob124",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "npm run typecheck && vite build && node scripts/build-electron.mjs",
+    "start": "electron .",
+    "test:desktop": "npm run build && playwright test",
+    "dist": "npm run build && electron-builder --win nsis --x64",
+    "verify:secrets": "node scripts/check-secrets.mjs"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "latest",
+    "electron": "^44.5.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "latest",
+    "prettier": "^3.9.9",
+    "typescript": "latest",
+    "vite": "^8.3.1",
+    "vitest": "latest"
+  },
+  "build": {
+    "appId": "com.tob124.chatnoteuki",
+    "productName": "ChatNoteUki",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico",
+      "artifactName": "ChatNoteUki-${version}-Setup-${arch}.${ext}",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
