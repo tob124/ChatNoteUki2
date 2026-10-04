@@ -14,6 +14,9 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
   let app = await launch();
   try {
     let page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setBounds({ width: 1200, height: 860 }),
+    );
     await expect(
       page.getByRole("heading", { name: "想法，从这里开始" }),
     ).toBeVisible();
@@ -62,6 +65,14 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
     expect(await page.locator(".records").evaluate((el) => el.scrollTop)).toBe(
       position,
     );
+    // Writing a draft dismisses the reference overlay on a narrow display.
+    // Reopen it explicitly before checking the reading layer.
+    if (
+      (await page
+        .getByRole("button", { name: "最大化资料", exact: true })
+        .count()) === 0
+    )
+      await page.getByRole("button", { name: "资料", exact: true }).click();
     await page.getByRole("button", { name: "最大化资料", exact: true }).click();
     await expect(page.locator(".reading-layer")).toBeVisible();
     await page.keyboard.press("Escape");
