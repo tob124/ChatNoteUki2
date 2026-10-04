@@ -14,6 +14,9 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
   let app = await launch();
   try {
     let page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setBounds({ width: 1200, height: 860 }),
+    );
     page.on("pageerror", (error) =>
       console.log("Research renderer error:", error.message),
     );
@@ -209,6 +212,9 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
     await page
       .getByLabel("回复这条笔记中的 AI")
       .fill("这份资料对我的通勤体验有哪些适用限制？");
+    await expect(
+      page.getByRole("complementary", { name: "备查资料" }),
+    ).not.toBeVisible();
     await page.getByRole("button", { name: "发送回复", exact: true }).click();
     await expect(
       page.locator(".research-card .discussion .ai-reply"),
@@ -254,9 +260,7 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
     await origin.getByLabel("资料分析问题").fill("资料无法打开时该怎么办");
     await origin.getByLabel("公开搜索词").fill("另一个公开查询");
     await origin.getByRole("button", { name: "确认搜索并分析" }).click();
-    await expect(
-      origin.getByText("资料分析未完成"),
-    ).toBeVisible();
+    await expect(origin.getByText("资料分析未完成")).toBeVisible();
     await origin.getByText("查看已找到的来源", { exact: true }).click();
     await origin
       .getByRole("button", { name: "暂时无法读取的资料", exact: true })

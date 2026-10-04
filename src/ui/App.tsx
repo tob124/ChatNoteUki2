@@ -573,7 +573,23 @@ export function App() {
           </div>
         </nav>
       )}
-      <main className="main-pane">
+      <main
+        className="main-pane"
+        onFocusCapture={(e) => {
+          if (
+            e.target instanceof HTMLTextAreaElement &&
+            e.target.closest(
+              ".note-reply-form, .composer, .research-card form, .research-controls",
+            )
+          ) {
+            if (
+              panel !== "closed" &&
+              window.matchMedia("(max-width: 1280px)").matches
+            )
+              patch({ panel: "closed" });
+          }
+        }}
+      >
         <header className="main-header">
           <div className="heading-left">
             {prefs.leftClosed && (
