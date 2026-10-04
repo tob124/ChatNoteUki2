@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UkiApi } from "../src/shared";
 const api: UkiApi = {
+  research: (input) => ipcRenderer.invoke("uki:research", input),
+  researchDetail: (id) => ipcRenderer.invoke("uki:researchDetail", id),
+  researchSource: (id, sourceId) =>
+    ipcRenderer.invoke("uki:researchSource", id, sourceId),
+  cancelResearch: (id) => ipcRenderer.invoke("uki:cancelResearch", id),
+  openSource: (url) => ipcRenderer.invoke("uki:openSource", url),
   dataReport: (before) => ipcRenderer.invoke("uki:dataReport", before),
   importDetail: (id) => ipcRenderer.invoke("uki:importDetail", id),
   bootstrap: () => ipcRenderer.invoke("uki:bootstrap"),

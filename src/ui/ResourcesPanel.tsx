@@ -10,6 +10,9 @@ import type {
 import { CognitionContent, RecapContent } from "./WorkUnits";
 import { dateLabel, type Action } from "./RecordCard";
 import { AnalysisControls } from "./AnalysisControls";
+import { ResearchControls } from "./ResearchControls";
+import type { ResearchSource } from "../research";
+export type ExternalReference = { source: ResearchSource };
 export type Reference = {
   detail: Awaited<ReturnType<UkiApi["detail"]>>;
   revision: number;
@@ -27,6 +30,8 @@ export function ResourcesPanel({
   hasApiKey,
   onSettings,
   onResult,
+  externalReference,
+  onSource,
 }: {
   resources: ThreadResources | null;
   reference: Reference | null;
@@ -40,6 +45,8 @@ export function ResourcesPanel({
   hasApiKey: boolean;
   onSettings(): void;
   onResult(task: AiTask): void;
+  externalReference?: ExternalReference | null;
+  onSource(ownerId: string, sourceId: string): void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     previous = useRef<"normal" | "wide">("normal");
@@ -57,7 +64,13 @@ export function ResourcesPanel({
       <header className="resource-header">
         <div>
           <span className="eyebrow">随时查阅</span>
-          <h2>{reference ? "原文引用" : "问题概览"}</h2>
+          <h2>
+            {externalReference
+              ? "来源核对"
+              : reference
+                ? "原文引用"
+                : "问题概览"}
+          </h2>
         </div>
         <div className="resource-controls">
           <button
@@ -78,7 +91,52 @@ export function ResourcesPanel({
         </div>
       </header>
       <div className="resource-scroll">
-        {reference ? (
+        {externalReference ? (
+          (() => {
+            const source = externalReference.source;
+            return (
+              <>
+                <button className="back-link" onClick={onClear}>
+                  返回概览
+                </button>
+                {source ? (
+                  <>
+                    <h3>{source.title}</h3>
+                    <p className="hint">{new URL(source.url).hostname}</p>
+                    <button
+                      onClick={() =>
+                        onAction(() => window.uki.openSource(source.url))
+                      }
+                    >
+                      打开原网页
+                    </button>
+                    <p className="hint">
+                      {source.fetchedAt
+                        ? `读取于 ${dateLabel(source.fetchedAt)}`
+                        : `发现于 ${dateLabel(source.discoveredAt)}`}
+                    </p>
+                    <p className="hint">{source.coverage}</p>
+                    {source.error && (
+                      <p className="error-text">{source.error}</p>
+                    )}
+                    {source.status === "read" ? (
+                      <p className="original reference-raw">{source.text}</p>
+                    ) : (
+                      <>
+                        <p className="hint">未取得正文，不能作为已核实依据。</p>
+                        {source.snippet && (
+                          <p className="original">搜索摘要：{source.snippet}</p>
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <p className="hint">该来源不存在。</p>
+                )}
+              </>
+            );
+          })()
+        ) : reference ? (
           <>
             <button className="back-link" onClick={onClear}>
               ← 返回概览
@@ -133,6 +191,18 @@ export function ResourcesPanel({
                     onAction={onAction}
                     onSettings={onSettings}
                     onResult={onResult}
+                  />
+                )}
+                {!data.thread.archived && (
+                  <ResearchControls
+                    key={`research:${data.thread.id}`}
+                    threadId={data.thread.id}
+                    title={data.thread.title}
+                    tasks={tasks}
+                    hasApiKey={hasApiKey}
+                    onAction={onAction}
+                    onResult={onResult}
+                  onSource={onSource}
                   />
                 )}
                 {data.recaps.map((r) => (

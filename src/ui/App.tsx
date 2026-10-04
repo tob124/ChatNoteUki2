@@ -24,7 +24,13 @@ import {
   RecapContent,
   StructureSuggestion,
 } from "./WorkUnits";
-import { ResourcesPanel, type Reference } from "./ResourcesPanel";
+import {
+  ResourcesPanel,
+  type Reference,
+  type ExternalReference,
+} from "./ResourcesPanel";
+import { ResearchCard } from "./ResearchCard";
+import type { Research } from "../research";
 import { ThreadDialog } from "./ThreadDialog";
 import { SettingsModal } from "./SettingsModal";
 const blank = (): WorkspaceState => ({
@@ -39,6 +45,7 @@ const labels: Record<string, string> = {
   pending: "待整理",
   organize: "整理建议",
   review: "回顾",
+  research: "外部资料",
 };
 const cleanError = (e: unknown) =>
   String(e instanceof Error ? e.message : e).replace(
@@ -70,6 +77,8 @@ export function App() {
     [collapsed, setCollapsed] = useState<string[]>([]),
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
+  const [externalReference, setExternalReference] =
+    useState<ExternalReference | null>(null);
   const [reload, setReload] = useState(0);
   const seenHead = useRef<{ scope: string; seq: number } | null>(null);
   useEffect(() => {
@@ -253,10 +262,12 @@ export function App() {
     const save = () => {
       if (!initialized.current) return;
       const { workspace: w, state: s } = live.current;
-      void window.uki.workspaceState(w, {
-        ...s,
-        ...readingPosition(),
-      });
+      void window.uki
+        .workspaceState(w, {
+          ...s,
+          ...readingPosition(),
+        })
+        .catch(() => {});
     };
     window.addEventListener("beforeunload", save);
     return () => {
@@ -310,6 +321,7 @@ export function App() {
       setSelected([]);
       setSelectedTargets({});
       setReference(null);
+      setExternalReference(null);
       setNewContent(false);
       if (focus)
         setTimeout(() => document.getElementById("capture")?.focus(), 100);
@@ -319,10 +331,18 @@ export function App() {
       if (version === navVersion.current) setLoading(false);
     }
   };
+  const externalSource = (ownerId: string, sourceId: string) =>
+    action(async () => {
+      const source = await window.uki.researchSource(ownerId, sourceId);
+      setExternalReference({ source });
+      setReference(null);
+      patch({ panel: state.panel === "closed" ? "normal" : state.panel });
+    });
   const evidence = (ref: Evidence) =>
     action(async () => {
       const detail = await window.uki.detail(ref.noteId);
       setReference({ detail, revision: ref.revision });
+      setExternalReference(null);
       setState((s) => ({
         ...s,
         panel: s.panel === "closed" ? "normal" : s.panel,
@@ -373,8 +393,10 @@ export function App() {
   };
   const showResult = (task: AiTask) =>
     action(async () => {
-      if (!task.threadId || !task.resultId) return;
-      await navigate(task.threadId);
+      if (!task.resultId) return;
+      if (task.kind === "research") await navigate("research");
+      else if (task.threadId) await navigate(task.threadId);
+      else return;
       restoreScroll.current = null;
       patch({
         before: task.resultBefore,
@@ -457,6 +479,7 @@ export function App() {
                 ["pending", "待整理", data.counts.unassigned],
                 ["organize", "整理建议", data.counts.structures],
                 ["review", "回顾", data.counts.recaps],
+                ["research", "外部资料", undefined],
               ] as const
             ).map(([id, label, count]) => (
               <button
@@ -582,9 +605,11 @@ export function App() {
             </button>
           </div>
         </header>
-        {workspace === "review" ? (
+        {workspace === "review" || workspace === "research" ? (
           <p className="review-intro hint">
-            这里汇集已生成的线程回顾，附原文引用。生成新回顾请进入具体问题，在右侧点击「生成线程回顾」。
+            {workspace === "research"
+              ? "这里保存围绕笔记和问题的资料分析。打开笔记卡片或问题右侧的「查找资料」，确认搜索词后才联网；资料与 AI 判断不会自动成为你的观点。"
+              : "这里汇集已生成的线程回顾，附原文引用。生成新回顾请进入具体问题，在右侧点击「生成线程回顾」。"}
           </p>
         ) : (
           <div className="search-row">
@@ -732,6 +757,10 @@ export function App() {
                   onAction={action}
                   onEvidence={evidence}
                   revisionToken={page.latest}
+                  tasks={data.tasks}
+                  hasApiKey={data.settings.hasApiKey}
+                  onResult={showResult}
+                  onSource={externalSource}
                 />
               ) : item.kind === "structure" ? (
                 <StructureSuggestion
@@ -774,6 +803,15 @@ export function App() {
                   onAction={action}
                   onEvidence={evidence}
                 />
+              ) : item.kind === "research" ? (
+                <ResearchCard
+                  key={item.value.id}
+                  value={item.value as Research}
+                  revisionToken={page.latest}
+                  onAction={action}
+                  onEvidence={evidence}
+                  onSource={externalSource}
+                />
               ) : (
                 <RecapContent
                   key={item.value.id}
@@ -802,22 +840,26 @@ export function App() {
               <h2>
                 {query
                   ? "还没找到相关记录"
-                  : workspace === "organize"
-                    ? "留出时间，慢慢整理"
-                    : workspace === "review"
-                      ? "还没有生成的回顾"
-                      : "一个问题，可以想很久"}
+                  : workspace === "research"
+                    ? "还没有保存的资料分析"
+                    : workspace === "organize"
+                      ? "留出时间，慢慢整理"
+                      : workspace === "review"
+                        ? "还没有生成的回顾"
+                        : "一个问题，可以想很久"}
               </h2>
               <p>
                 {query
                   ? "试试更短的关键词，或切换原文与 AI 回应的搜索范围。"
-                  : workspace === "pending"
-                    ? "归属不确定的记录在这里。AI 失败状态可单独筛选。"
-                    : workspace === "organize"
-                      ? "后台整理会提出候选建议，确认后才更改归属和结构。"
-                      : workspace === "review"
-                        ? "进入一个具体问题，在右侧点击「生成线程回顾」。成功生成后会保存在这里；等待和失败的任务不会变成回顾条目。"
-                        : "想到什么，先写下来。原话、变化和依据都能留住。"}
+                  : workspace === "research"
+                    ? "打开一条笔记或进入具体问题，点击「查找资料」。确认可公开的搜索词后，AI 才会联网查找并分析。"
+                    : workspace === "pending"
+                      ? "归属不确定的记录在这里。AI 失败状态可单独筛选。"
+                      : workspace === "organize"
+                        ? "后台整理会提出候选建议，确认后才更改归属和结构。"
+                        : workspace === "review"
+                          ? "进入一个具体问题，在右侧点击「生成线程回顾」。成功生成后会保存在这里；等待和失败的任务不会变成回顾条目。"
+                          : "想到什么，先写下来。原话、变化和依据都能留住。"}
               </p>
               {!data.settings.hasApiKey && (
                 <button onClick={() => setSettings(true)}>配置 DeepSeek</button>
@@ -825,7 +867,7 @@ export function App() {
             </div>
           )}
         </div>
-        {(workspace !== "review" || !!state.draft) && (
+        {(!["review", "research"].includes(workspace) || !!state.draft) && (
           <div className="composer">
             {workspace === "review" && (
               <p className="hint">
@@ -888,9 +930,13 @@ export function App() {
         <ResourcesPanel
           resources={resources}
           reference={reference}
+          externalReference={externalReference}
           panel={panel}
           onPanel={(p) => patch({ panel: p })}
-          onClear={() => setReference(null)}
+          onClear={() => {
+            setReference(null);
+            setExternalReference(null);
+          }}
           onEvidence={evidence}
           onAction={action}
           onManage={setEditingThread}
@@ -898,6 +944,7 @@ export function App() {
           hasApiKey={data.settings.hasApiKey}
           onSettings={() => setSettings(true)}
           onResult={showResult}
+          onSource={externalSource}
         />
       )}
       {settings && (

@@ -148,13 +148,13 @@ it("preserves unfinished inbox receipts and daily budget accounting during reent
   observeInbox(s, "手机正文\n\n新增正文", '"two"');
   expect(s.snapshot().notes).toHaveLength(5);
 });
-it("publishes format 3 and restores reentered data without another AI request or duplicate notes", async () => {
+it("publishes format 4 and restores reentered data without another AI request or duplicate notes", async () => {
   const s = open(),
     dav = new FakeDav();
   fixture(s);
   s.reimportRawNotes();
   await new SyncEngine(s, dav).backup();
-  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(3);
+  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(4);
   const restored = open();
   await new SyncEngine(restored, dav).restore();
   expect(restored.snapshot()).toEqual(s.snapshot());

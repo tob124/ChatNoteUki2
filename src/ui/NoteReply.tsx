@@ -5,9 +5,11 @@ import type { Action } from "./RecordCard";
 export function NoteReply({
   note,
   onAction,
+  researchId,
 }: {
   note: Note;
   onAction: Action;
+  researchId?: string;
 }) {
   const rootId = note.parentNoteId ?? note.id;
   const [draft, setDraft] = useState<string | null>(null);
@@ -18,7 +20,7 @@ export function NoteReply({
     note.parentNoteId ? (note.parentRevision ?? 0) : (note.revision ?? 0),
   );
   const input = useRef<HTMLTextAreaElement>(null);
-  const key = "conversation:" + rootId;
+  const key = "conversation:" + rootId + (researchId ? ":" + researchId : "");
   const state = (text: string) => ({
     draft: text,
     mode: "discussion" as const,
@@ -62,6 +64,7 @@ export function NoteReply({
               parentNoteId: rootId,
               parentRevision,
               model: pro ? "deepseek-v4-pro" : "deepseek-flash",
+              ...(researchId ? { researchId } : {}),
             });
             setDraft("");
             setPro(false);

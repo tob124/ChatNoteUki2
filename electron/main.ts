@@ -1,4 +1,14 @@
-import { app, BrowserWindow, ipcMain, Menu, protocol, net } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  protocol,
+  net,
+  shell,
+} from "electron";
+import { researchInputSchema } from "../src/research";
+import { publicUrl } from "./public-source";
 import { join, resolve, sep } from "node:path";
 import { mkdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -129,12 +139,19 @@ function bootstrap(): Bootstrap {
     ),
     tasks: store
       .latest<import("../src/shared").AiTask>("tasks", 30)
-      .map(({ input, result, ...task }) => {
+      .map(({ input, result, checkpoint, candidate, ...task }) => {
         const resultId = uuid.safeParse(
           (result as { resultId?: string } | undefined)?.resultId,
         ).data;
         return {
           ...task,
+          researchStage: checkpoint?.stage,
+          sourceCount: checkpoint?.sources.length,
+          sourceLabels: checkpoint?.sources.map(({ id, title, status }) => ({
+            id,
+            title,
+            status,
+          })),
           resultId,
           resultBefore: resultId ? store.resultBefore(resultId) : undefined,
         };
@@ -171,7 +188,14 @@ function registerIpc() {
           .object({
             workspace: z.union([
               uuid,
-              z.enum(["all", "pending", "organize", "review", "history"]),
+              z.enum([
+                "all",
+                "pending",
+                "organize",
+                "review",
+                "research",
+                "history",
+              ]),
             ]),
             before: z.number().int().positive().optional(),
             date: z
@@ -294,8 +318,35 @@ function registerIpc() {
       id: task.id,
       status: "pending",
       error: null,
+      ...(task.kind === "research" && task.checkpoint
+        ? {
+            checkpoint: {
+              ...task.checkpoint,
+              readAttempts: 0,
+              sources: task.checkpoint.sources.map((source) =>
+                source.status === "failed"
+                  ? { ...source, status: "discovered", error: null }
+                  : source,
+              ),
+            },
+          }
+        : {}),
     });
     void ai.pump();
+  });
+  handle("research", (input) => {
+    const id = ai.queueResearch(researchInputSchema.parse(input));
+    changed();
+    void ai.pump();
+    return id;
+  });
+  handle("researchDetail", (id) => store.research(uuid.parse(id)));
+  handle("researchSource", (id, sourceId) =>
+    store.researchSource(uuid.parse(id), z.string().length(24).parse(sourceId)),
+  );
+  handle("cancelResearch", (id) => ai.cancelResearch(uuid.parse(id)));
+  handle("openSource", async (input) => {
+    await shell.openExternal(publicUrl(z.string().max(2000).parse(input)).href);
   });
   handle("recap", (id, selectedModel) => {
     const task = ai.queueAnalysis(
@@ -461,6 +512,6 @@ else {
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", () => {
     automaticSync.stop();
-    store?.close();
   });
+  app.on("quit", () => store?.close());
 }

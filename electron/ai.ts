@@ -17,6 +17,7 @@ export interface AiTransport {
     system: string,
     context: string,
     maxOutput: number,
+    signal?: AbortSignal,
   ): Promise<Completion>;
 }
 class RejectedRequest extends Error {
@@ -29,11 +30,14 @@ export class DeepSeek implements AiTransport {
     system: string,
     context: string,
     maxOutput: number,
+    signal?: AbortSignal,
   ): Promise<Completion> {
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(90000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(90000)])
+        : AbortSignal.timeout(90000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,

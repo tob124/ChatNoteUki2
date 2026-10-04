@@ -341,7 +341,9 @@ export function SettingsModal({
                 ? "历史整理"
                 : t.kind === "recap"
                   ? "回顾"
-                  : "认知分析"}{" "}
+                  : t.kind === "research"
+                    ? "资料分析"
+                    : "认知分析"}{" "}
               ·{" "}
               {
                 {
@@ -350,6 +352,7 @@ export function SettingsModal({
                   done: "完成",
                   failed: "失败",
                   budget: "预算等待",
+                  cancelled: "已取消",
                 }[t.status]
               }{" "}
               {t.error}

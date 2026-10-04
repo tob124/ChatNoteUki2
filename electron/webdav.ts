@@ -157,7 +157,12 @@ const descriptor = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const manifestSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  schemaVersion: z.union([
+    z.literal(1),
+    z.literal(2),
+    z.literal(3),
+    z.literal(4),
+  ]),
   deviceId: z.string().uuid(),
   generation: z.number().int().nonnegative(),
   batches: z.array(descriptor).max(100000),
@@ -165,7 +170,12 @@ const manifestSchema = z.object({
 });
 type Manifest = z.infer<typeof manifestSchema>;
 const eventFileSchema = z.object({
-  schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  schemaVersion: z.union([
+    z.literal(1),
+    z.literal(2),
+    z.literal(3),
+    z.literal(4),
+  ]),
   events: z.array(z.unknown()).max(100),
 });
 const text = (r: DavResponse) =>
@@ -237,7 +247,7 @@ export class SyncEngine {
     if (r.status === 404) return { value: null, etag: null };
     ok(r, "读取恢复清单");
     const decoded = JSON.parse(text(r));
-    if (![1, 2, 3].includes(decoded.schemaVersion))
+    if (![1, 2, 3, 4].includes(decoded.schemaVersion))
       throw new Error("云端资料格式不受此版本支持，请升级软件后再同步");
     return { value: manifestSchema.parse(decoded), etag: r.etag };
   }
@@ -374,7 +384,7 @@ export class SyncEngine {
       }
       const file = `events/${chunk[0].event.id}_${chunk.at(-1)!.event.id}.json`;
       const content = JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         events: chunk.map((r) => r.event),
       });
       const digest = hash(content);
@@ -394,7 +404,7 @@ export class SyncEngine {
     if (!rows.length && remote.value && strongEtag(remote.etag))
       return { value: remote.value, etag: remote.etag };
     const next: Manifest = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       deviceId: this.store.getMeta("deviceId")!,
       generation: (remote.value?.generation ?? 0) + 1,
       batches,

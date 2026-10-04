@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NoteReply } from "./NoteReply";
+import { ResearchControls } from "./ResearchControls";
+import type { AiTask } from "../shared";
 import {
   isShortNote,
   type Note,
@@ -24,6 +26,10 @@ export function RecordCard({
   onAction,
   onEvidence,
   revisionToken,
+  tasks = [],
+  hasApiKey = false,
+  onResult = () => {},
+  onSource = () => {},
 }: {
   note: Note;
   threads: Thread[];
@@ -32,6 +38,10 @@ export function RecordCard({
   onAction: Action;
   onEvidence(r: Evidence): void;
   revisionToken: number;
+  tasks?: AiTask[];
+  hasApiKey?: boolean;
+  onResult?(task: AiTask): void;
+  onSource?(ownerId: string, sourceId: string): void;
 }) {
   const [detail, setDetail] = useState<Awaited<
     ReturnType<UkiApi["detail"]>
@@ -254,6 +264,18 @@ export function RecordCard({
                     ))}
                 </select>
               </div>
+              {full.mode === "note" && (
+                <ResearchControls
+                  noteId={full.id}
+                  threadId={full.threadId}
+                  title={full.title}
+                  tasks={tasks}
+                  hasApiKey={hasApiKey}
+                  onAction={onAction}
+                  onResult={onResult}
+                  onSource={onSource}
+                />
+              )}
             </>
           )}
         </div>

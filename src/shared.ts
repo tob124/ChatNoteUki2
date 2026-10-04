@@ -1,4 +1,10 @@
 import { z } from "zod";
+import type {
+  ResearchInput,
+  ResearchCheckpoint,
+  Research,
+  ResearchSource,
+} from "./research";
 
 export const stateContentSchema = z.object({
   viewpoint: z.string().max(2000),
@@ -29,6 +35,7 @@ export interface Thread {
   revision?: number;
 }
 export interface Note {
+  researchId?: string;
   id: string;
   raw: string;
   title: string;
@@ -104,11 +111,17 @@ export interface StructureProposal {
 }
 export interface AiTask {
   id: string;
-  kind: "organize" | "cognition" | "recap";
+  kind: "organize" | "cognition" | "recap" | "research";
   noteIds: string[];
   threadId: string | null;
   model: Note["model"];
-  status: "pending" | "running" | "done" | "failed" | "budget";
+  status: "pending" | "running" | "done" | "failed" | "budget" | "cancelled";
+  research?: ResearchInput;
+  checkpoint?: ResearchCheckpoint;
+  researchStage?: ResearchCheckpoint["stage"];
+  sourceCount?: number;
+  sourceLabels?: Pick<ResearchSource, "id" | "title" | "status">[];
+  candidate?: { content: string; finishReason: string | null } | null;
   createdAt: string;
   error: string | null;
   input?: string;
@@ -142,8 +155,8 @@ export interface WorkspaceQuery {
 }
 export interface WorkspaceItem {
   seq: number;
-  kind: "note" | "structure" | "proposal" | "recap";
-  value: Note | StructureProposal | Proposal | Recap;
+  kind: "note" | "structure" | "proposal" | "recap" | "research";
+  value: Note | StructureProposal | Proposal | Recap | Research;
 }
 export interface WorkspacePage {
   items: WorkspaceItem[];
@@ -202,6 +215,7 @@ export interface ThreadResources {
   cognition: Cognition;
   proposals: Proposal[];
   recaps: Recap[];
+  researches?: Research[];
   cognitionHistory: Cognition[];
   count: number;
   recapDue: boolean;
@@ -232,6 +246,7 @@ export interface InboxBatch {
   createdAt: string;
 }
 export interface Usage {
+  searches?: number;
   id: string;
   input: number;
   output: number;
@@ -239,6 +254,7 @@ export interface Usage {
   createdAt: string;
 }
 export interface Snapshot {
+  researches?: Research[];
   notes: Note[];
   threads: Thread[];
   cognitions: Cognition[];
@@ -275,6 +291,7 @@ export interface AppView extends Snapshot {
 }
 export const captureSchema = z
   .object({
+    researchId: z.string().uuid().optional(),
     raw: z
       .string()
       .min(1)
@@ -334,12 +351,18 @@ export const eventSchema = z.object({
     "task.added",
     "task.updated",
     "recap.added",
+    "research.added",
   ]),
   payload: z.unknown(),
   createdAt: z.string().datetime(),
 });
 export type ThoughtEvent = z.infer<typeof eventSchema>;
 export interface UkiApi {
+  research(input: ResearchInput): Promise<string>;
+  researchDetail(id: string): Promise<Research>;
+  researchSource(ownerId: string, sourceId: string): Promise<ResearchSource>;
+  cancelResearch(id: string): Promise<void>;
+  openSource(url: string): Promise<void>;
   dataReport(before?: number): Promise<{
     batches: {
       seq: number;

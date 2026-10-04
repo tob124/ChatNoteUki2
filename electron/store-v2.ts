@@ -5,6 +5,13 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { humanizeGenerated, humanizeText } from "./presentation";
 import {
+  researchInputSchema,
+  researchCheckpointSchema,
+  researchSchema,
+  type ResearchInput,
+  type Research,
+} from "../src/research";
+import {
   aiNoteSchema,
   captureSchema,
   emptyContent,
@@ -43,6 +50,7 @@ const threadSchema = z.object({
   revision: natural.optional(),
 });
 const noteSchema = z.object({
+  researchId: uuid.optional(),
   id: uuid,
   raw: z.string().min(1).max(50000),
   title: z.string().max(200),
@@ -74,6 +82,7 @@ const batchSchema = z.object({
   createdAt: z.string().datetime(),
 });
 const usageSchema = z.object({
+  searches: natural.optional(),
   id: uuid,
   input: natural,
   output: natural,
@@ -98,7 +107,8 @@ export const structureInputSchema = z.object({
 });
 const taskSchema = z.object({
   id: uuid,
-  kind: z.enum(["organize", "cognition", "recap"]),
+  kind: z.enum(["organize", "cognition", "recap", "research"]),
+  research: researchInputSchema.optional(),
   noteIds: z.array(uuid).max(10),
   threadId: uuid.nullable(),
   model: z.enum(["deepseek-flash", "deepseek-v4-pro"]),
@@ -187,13 +197,29 @@ const schemas = {
   "task.added": taskSchema,
   "task.updated": z.object({
     id: uuid,
-    status: z.enum(["pending", "running", "done", "failed", "budget"]),
+    status: z.enum([
+      "pending",
+      "running",
+      "done",
+      "failed",
+      "budget",
+      "cancelled",
+    ]),
+    checkpoint: researchCheckpointSchema.optional(),
+    candidate: z
+      .object({
+        content: z.string().max(24000),
+        finishReason: z.string().nullable(),
+      })
+      .nullable()
+      .optional(),
     error: z.string().max(1000).nullable().optional(),
     input: z.string().max(32000).optional(),
     inputVersions: z.array(evidenceSchema).max(30).optional(),
     budgetDay: z.string().optional(),
     result: z.unknown().optional(),
   }),
+  "research.added": researchSchema,
   "recap.added": z.object({
     id: uuid,
     threadId: uuid,
@@ -224,6 +250,7 @@ type Kind =
   | "structures"
   | "tasks"
   | "recaps"
+  | "researches"
   | "revisions"
   | "cognitionHistory";
 
@@ -786,6 +813,13 @@ export class Store {
         this.verifyEvidence(p.evidence);
         this.put("recaps", p.id, p, seq);
         break;
+      case "research.added":
+        if (p.threadId) this.requireThread(p.threadId);
+        if (p.noteId) this.note(p.noteId);
+        this.verifyEvidence(p.evidence);
+        if (this.get("researches", p.id)) throw new Error("资料分析重复");
+        this.put("researches", p.id, p, seq);
+        break;
     }
   }
   checkBases(b: StructureProposal["bases"]) {
@@ -1004,6 +1038,7 @@ export class Store {
   }
   snapshot(): Snapshot {
     return {
+      researches: this.all("researches"),
       notes: this.all("notes"),
       threads: this.all("threads"),
       cognitions: this.all("cognitions"),
@@ -1139,10 +1174,18 @@ export class Store {
     const v = captureSchema.parse(rawInput);
     if (v.mode === "discussion" && !v.parentNoteId)
       throw new Error("请从一条笔记发起讨论");
+    if (v.researchId) {
+      if (v.mode !== "discussion" || !v.parentNoteId)
+        throw new Error("资料仅能关联到主动讨论");
+      const research = this.research(v.researchId);
+      if (!research.evidence.some((e) => e.noteId === v.parentNoteId))
+        throw new Error("这份资料不属于所选笔记");
+    }
     if (v.threadId) this.requireThread(v.threadId, true);
     return {
       id,
       raw: v.raw,
+      ...(v.researchId ? { researchId: v.researchId } : {}),
       title: [
         ...(v.raw.split(/\r\n|\r|\n/).find((s) => s.trim()) ?? "新想法").trim(),
       ]
@@ -1281,7 +1324,11 @@ export class Store {
     const clauses = ["1=1"],
       args: (string | number)[] = [];
     if (q.workspace === "pending") clauses.push("threadId IS NULL");
-    else if (!["all", "organize", "review", "history"].includes(q.workspace)) {
+    else if (
+      !["all", "organize", "review", "research", "history"].includes(
+        q.workspace,
+      )
+    ) {
       const ids = this.scopeThreadIds(q.workspace);
       clauses.push(`threadId IN (${ids.map(() => "?").join(",")})`);
       args.push(...ids);
@@ -1318,7 +1365,7 @@ export class Store {
           ? Number(
               this.db
                 .prepare(
-                  "SELECT COALESCE(MAX(seq),0)+1 AS n FROM entities_v2 WHERE kind IN ('notes','structures','proposals','recaps') AND createdAt<=?",
+                  "SELECT COALESCE(MAX(seq),0)+1 AS n FROM entities_v2 WHERE kind IN ('notes','structures','proposals','recaps','researches') AND createdAt<=?",
                 )
                 .get(new Date(q.date + "T23:59:59.999+08:00").toISOString())?.n,
             )
@@ -1328,12 +1375,14 @@ export class Store {
         ? "structures"
         : q.workspace === "review"
           ? "recaps"
-          : null;
+          : q.workspace === "research"
+            ? "researches"
+            : null;
     const notes = `SELECT seq,'note' AS kind,id FROM note_query_v2 WHERE ${c.sql}`;
     let select: string, args: (string | number)[];
     if (special) {
       select =
-        "SELECT seq,CASE kind WHEN 'structures' THEN 'structure' ELSE 'recap' END AS kind,id FROM entities_v2 WHERE kind=?";
+        "SELECT seq,CASE kind WHEN 'structures' THEN 'structure' WHEN 'researches' THEN 'research' ELSE 'recap' END AS kind,id FROM entities_v2 WHERE kind=?";
       args = [special];
     } else if (q.workspace === "history") {
       select =
@@ -1359,6 +1408,10 @@ export class Store {
           " UNION ALL SELECT seq,'recap',id FROM entities_v2 WHERE kind='recaps' AND json_extract(body,'$.threadId')=?";
         args.push(q.workspace);
       }
+      select +=
+        " UNION ALL SELECT seq,'research',id FROM entities_v2 WHERE kind='researches'" +
+        filter;
+      if (filter) args.push(q.workspace);
     } else {
       select = notes;
       args = c.args;
@@ -1378,7 +1431,7 @@ export class Store {
       visible = rows.slice(0, 30).reverse();
     const items = visible.map((r) => {
       const kind = String(r.kind) as
-          "note" | "structure" | "proposal" | "recap",
+          "note" | "structure" | "proposal" | "recap" | "research",
         bucket =
           kind === "note"
             ? "notes"
@@ -1386,7 +1439,9 @@ export class Store {
               ? "structures"
               : kind === "proposal"
                 ? "proposals"
-                : "recaps",
+                : kind === "research"
+                  ? "researches"
+                  : "recaps",
         value =
           kind === "note"
             ? JSON.parse(
@@ -1396,7 +1451,9 @@ export class Store {
                     .get(String(r.id))!.summary,
                 ),
               )
-            : this.get<any>(bucket, String(r.id));
+            : kind === "research"
+              ? this.research(String(r.id), false)
+              : this.get<any>(bucket, String(r.id));
       return { seq: Number(r.seq), kind, value };
     });
     const newer =
@@ -1718,8 +1775,33 @@ export class Store {
     if (!t) throw new Error("任务不存在");
     return t;
   }
+  research(id: string, full = true): Research {
+    const value = this.get<Research>("researches", id);
+    if (!value) throw new Error("资料分析不存在");
+    return full
+      ? value
+      : {
+          ...value,
+          sources: value.sources.map(({ text, snippet, ...source }) => ({
+            ...source,
+            text: "",
+            snippet: "",
+          })),
+        };
+  }
   tasks(): AiTask[] {
     return this.all("tasks");
+  }
+  researchSource(
+    ownerId: string,
+    sourceId: string,
+  ): import("../src/research").ResearchSource {
+    const research = this.get<Research>("researches", ownerId);
+    const sources =
+      research?.sources ?? this.task(ownerId).checkpoint?.sources ?? [];
+    const source = sources.find((s) => s.id === sourceId);
+    if (!source) throw new Error("该任务没有这个来源，请刷新后核对。");
+    return source;
   }
   display<T>(value: T): T {
     return humanizeGenerated(value, (text) =>
@@ -1736,7 +1818,7 @@ export class Store {
   resultBefore(id: string): number | undefined {
     const row = this.db
       .prepare(
-        "SELECT seq FROM entities_v2 WHERE kind IN ('proposals','recaps') AND id=? LIMIT 1",
+        "SELECT seq FROM entities_v2 WHERE kind IN ('proposals','recaps','researches') AND id=? LIMIT 1",
       )
       .get(id);
     return row ? Number(row.seq) + 1 : undefined;
@@ -1746,12 +1828,19 @@ export class Store {
     threadId: string | null,
     model: Note["model"],
     noteIds: string[] = [],
+    research?: ResearchInput,
   ) {
     const existing = this.db
       .prepare(
-        "SELECT id FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.kind')=? AND json_extract(body,'$.threadId') IS ? AND json_extract(body,'$.model')=? AND json_extract(body,'$.noteIds')=? AND json_extract(body,'$.status') IN ('pending','running','budget') LIMIT 1",
+        "SELECT id FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.kind')=? AND json_extract(body,'$.threadId') IS ? AND json_extract(body,'$.model')=? AND json_extract(body,'$.noteIds')=? AND coalesce(json_extract(body,'$.research'),'')=? AND json_extract(body,'$.status') IN ('pending','running','budget') LIMIT 1",
       )
-      .get(kind, threadId, model, JSON.stringify(noteIds));
+      .get(
+        kind,
+        threadId,
+        model,
+        JSON.stringify(noteIds),
+        research ? JSON.stringify(research) : "",
+      );
     if (existing) return String(existing.id);
     const id = randomUUID();
     this.append("task.added", {
@@ -1760,6 +1849,7 @@ export class Store {
       threadId,
       model,
       noteIds,
+      ...(research ? { research } : {}),
       status: "pending",
       error: null,
       createdAt: new Date().toISOString(),

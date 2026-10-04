@@ -56,6 +56,66 @@ app
         parentId: null,
       });
       local.addTask("organize", null, "deepseek-flash", [id]);
+      const researchId = randomUUID();
+      const taskId = local.addTask("research", null, "deepseek-flash", [id], {
+        noteId: id,
+        threadId: null,
+        question: "隔离资料验收的问题",
+        queries: ["公开合成搜索词"],
+      });
+      const now = new Date().toISOString();
+      const source = {
+        id: "a".repeat(24),
+        url: "https://example.com/study",
+        title: "隔离合成资料",
+        discoveredAt: now,
+        fetchedAt: now,
+        snippet: "",
+        text: "这是独立生成的合成验收正文，只用于核对资料恢复是否一致。",
+        status: "read",
+        error: null,
+        coverage: "模拟静态正文",
+      };
+      local.appendMany([
+        local.event("research.added", {
+          id: researchId,
+          taskId,
+          noteId: id,
+          threadId: null,
+          question: "隔离资料验收的问题",
+          queries: ["公开合成搜索词"],
+          createdAt: now,
+          evidence: [{ noteId: id, revision: 1 }],
+          baseVersion: 0,
+          sources: [source],
+          searches: 1,
+          report: {
+            findings: [
+              {
+                sourceId: source.id,
+                quote: "独立生成的合成验收正文",
+                claim: "仅测试来源恢复",
+                relation: "context",
+              },
+            ],
+            analysis: "合成验收分析，不代表用户表达。",
+            limitations: ["模拟内容"],
+            questions: [],
+          },
+        }),
+        local.event("task.updated", {
+          id: taskId,
+          status: "done",
+          result: { resultId: researchId },
+        }),
+      ]);
+      local.capture({
+        raw: "这是围绕合成资料的用户追问。",
+        mode: "discussion",
+        parentNoteId: id,
+        parentRevision: 1,
+        researchId,
+      });
       await sync.backup();
       const start = trace.length;
       await new SyncEngine(local, dav, () => {}, "isolated-v2").sync();
@@ -73,13 +133,19 @@ app
         local.detail(id).revisions,
       );
       report.versionedRestore = true;
+      assert.deepEqual(
+        restored.research(researchId),
+        local.research(researchId),
+      );
+      assert.equal(restored.detail(id).discussions[0].researchId, researchId);
+      report.researchAndDiscussionRestore = true;
       const manifest = JSON.parse(
         Buffer.from((await dav.request("GET", "manifest.json")).body).toString(
           "utf8",
         ),
       );
-      assert.equal(manifest.schemaVersion, 2);
-      report.cloudFormat = 2;
+      assert.equal(manifest.schemaVersion, 4);
+      report.cloudFormat = 4;
     } finally {
       stores.forEach((s) => s.close());
       if (owned) {
