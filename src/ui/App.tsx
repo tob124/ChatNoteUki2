@@ -33,6 +33,7 @@ import { ResearchCard } from "./ResearchCard";
 import type { Research } from "../research";
 import { ThreadDialog } from "./ThreadDialog";
 import { SettingsModal } from "./SettingsModal";
+import { TaskPanel } from "./TaskPanel";
 const blank = (): WorkspaceState => ({
   draft: "",
   mode: "note",
@@ -45,7 +46,9 @@ const labels: Record<string, string> = {
   pending: "待整理",
   organize: "整理建议",
   review: "回顾",
-  research: "外部资料",
+  research: "资料",
+  favorites: "收藏",
+  trash: "回收站",
 };
 const cleanError = (e: unknown) =>
   String(e instanceof Error ? e.message : e).replace(
@@ -77,6 +80,22 @@ export function App() {
     [collapsed, setCollapsed] = useState<string[]>([]),
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
+  const [taskPanel, setTaskPanel] = useState(false);
+  const [streaming, setStreaming] = useState<Record<string, string>>({});
+  useEffect(
+    () =>
+      window.uki?.onProgress((progress) =>
+        setStreaming((value) => ({ ...value, [progress.id]: progress.text })),
+      ),
+    [],
+  );
+  const [returnWorkspace, setReturnWorkspace] = useState<string | null>(null);
+  const [selectedNotes, setSelectedNotes] = useState<string[]>([]),
+    [moveTarget, setMoveTarget] = useState(""),
+    [movePreview, setMovePreview] = useState(false),
+    [undoMoveId, setUndoMoveId] = useState<string | null>(null),
+    [undoTrash, setUndoTrash] = useState<string[]>([]),
+    [notice, setNotice] = useState("");
   const [externalReference, setExternalReference] =
     useState<ExternalReference | null>(null);
   const [reload, setReload] = useState(0);
@@ -131,6 +150,7 @@ export function App() {
       searchIn,
       aiFilter,
       date: date || undefined,
+      includeHistory: state.includeHistory,
     });
     if (
       version === pageVersion.current &&
@@ -154,7 +174,17 @@ export function App() {
       setPage(result);
       setLoading(false);
     }
-  }, [ready, workspace, state.before, query, searchIn, aiFilter, date, reload]);
+  }, [
+    ready,
+    workspace,
+    state.before,
+    state.includeHistory,
+    query,
+    searchIn,
+    aiFilter,
+    date,
+    reload,
+  ]);
   const loadResources = useCallback(async () => {
     const version = ++resourceVersion.current;
     const result = await window.uki.resources(threadId);
@@ -192,6 +222,9 @@ export function App() {
         setData(d);
         setState({ ...s, panel: s.panel ?? "closed" });
         setDate(s.date ?? "");
+        setQuery(s.query ?? "");
+        setSearchIn(s.searchIn ?? "original");
+        setAiFilter(s.aiFilter ?? "all");
         restoreScroll.current = s.scroll ?? "bottom";
         setPrefs(p);
         try {
@@ -315,10 +348,12 @@ export function App() {
         panel: saved.panel ?? (specific ? "normal" : "closed"),
       });
       restoreScroll.current = saved.scroll ?? "bottom";
-      setQuery("");
+      setQuery(saved.query ?? "");
+      setSearchIn(saved.searchIn ?? "original");
       setDate(saved.date ?? "");
-      setAiFilter("all");
+      setAiFilter(saved.aiFilter ?? "all");
       setSelected([]);
+      setSelectedNotes([]);
       setSelectedTargets({});
       setReference(null);
       setExternalReference(null);
@@ -384,7 +419,14 @@ export function App() {
         draft: s.draft === submitted ? "" : s.draft,
         openIds: [...s.openIds, id].slice(-100),
       }));
-      await refresh();
+      setNotice(
+        "已保存到本机" + (data?.settings.hasDavPassword ? " · 尚未上传" : ""),
+      );
+      void refresh().catch((e) =>
+        setError(
+          "原文已保存；界面刷新失败，请重新打开当前工作区。" + cleanError(e),
+        ),
+      );
     } catch (e) {
       setError(cleanError(e));
     } finally {
@@ -440,7 +482,9 @@ export function App() {
       </main>
     );
   const panel = state.panel ?? "closed",
-    active = data.threads.filter((t) => !t.archived),
+    active = data.threads
+      .filter((t) => !t.archived)
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)),
     font = Number(prefs.font ?? 14),
     left = Number(prefs.left ?? 220),
     right = Number(prefs.right ?? 300),
@@ -476,10 +520,11 @@ export function App() {
             {(
               [
                 ["all", "全部记录", data.counts.notes],
+                ["favorites", "收藏", undefined],
                 ["pending", "待整理", data.counts.unassigned],
                 ["organize", "整理建议", data.counts.structures],
                 ["review", "回顾", data.counts.recaps],
-                ["research", "外部资料", undefined],
+                ["research", "资料", undefined],
               ] as const
             ).map(([id, label, count]) => (
               <button
@@ -537,6 +582,7 @@ export function App() {
                           onClick={() => void navigate(c.id)}
                         >
                           {c.title}
+                          {c.pinned ? " · 置顶" : ""}
                         </button>
                       ))}
                 </div>
@@ -564,6 +610,12 @@ export function App() {
             )}
           </div>
           <div className="sidebar-footer">
+            <button
+              className={workspace === "trash" ? "active" : ""}
+              onClick={() => void navigate("trash")}
+            >
+              回收站
+            </button>
             <button onClick={() => setSettings(true)}>设置与数据</button>
             <p>
               {data.pendingSync
@@ -591,6 +643,17 @@ export function App() {
         }}
       >
         <header className="main-header">
+          {returnWorkspace && (
+            <button
+              onClick={() => {
+                const destination = returnWorkspace;
+                setReturnWorkspace(null);
+                void navigate(destination);
+              }}
+            >
+              返回查找位置
+            </button>
+          )}
           <div className="heading-left">
             {prefs.leftClosed && (
               <button
@@ -617,7 +680,7 @@ export function App() {
                 patch({ panel: panel === "closed" ? "normal" : "closed" })
               }
             >
-              资料
+              概览
             </button>
           </div>
         </header>
@@ -637,13 +700,19 @@ export function App() {
               maxLength={200}
               onChange={(e) => {
                 setQuery(e.target.value);
-                patch({ before: undefined });
+                patch({ before: undefined, query: e.target.value });
               }}
             />
             <select
               aria-label="搜索范围"
               value={searchIn}
-              onChange={(e) => setSearchIn(e.target.value as typeof searchIn)}
+              onChange={(e) => {
+                setSearchIn(e.target.value as typeof searchIn);
+                patch({
+                  searchIn: e.target.value as typeof searchIn,
+                  before: undefined,
+                });
+              }}
             >
               <option value="original">原文与派生信息</option>
               <option value="reply">AI 回应</option>
@@ -653,13 +722,55 @@ export function App() {
               value={aiFilter}
               onChange={(e) => {
                 setAiFilter(e.target.value as typeof aiFilter);
-                patch({ before: undefined });
+                patch({
+                  before: undefined,
+                  aiFilter: e.target.value as typeof aiFilter,
+                });
               }}
             >
               <option value="all">全部状态</option>
               <option value="pending">AI 待处理</option>
               <option value="failed">AI 失败</option>
             </select>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={!!state.includeHistory}
+                onChange={(e) =>
+                  patch({ includeHistory: e.target.checked, before: undefined })
+                }
+              />
+              包含更正历史
+            </label>
+            {workspace !== "all" && query && (
+              <button
+                onClick={() => {
+                  const keyword = query;
+                  void navigate("all").then(() => {
+                    setQuery(keyword);
+                    patch({ query: keyword, before: undefined });
+                  });
+                }}
+              >
+                搜索全部记录
+              </button>
+            )}
+            {(query || aiFilter !== "all" || state.includeHistory) && (
+              <button
+                onClick={() => {
+                  setQuery("");
+                  setAiFilter("all");
+                  patch({
+                    query: "",
+                    aiFilter: "all",
+                    includeHistory: false,
+                    before: undefined,
+                  });
+                }}
+              >
+                清除筛选
+              </button>
+            )}
           </div>
         )}
         {error && (
@@ -668,6 +779,136 @@ export function App() {
             <button aria-label="关闭提示" onClick={() => setError("")}>
               关闭
             </button>
+          </div>
+        )}
+        {(notice || undoTrash.length > 0 || undoMoveId) && (
+          <div className="feedback-bar" role="status">
+            <span>{notice}</span>
+            {undoTrash.length > 0 && (
+              <button
+                onClick={() =>
+                  action(async () => {
+                    await window.uki.trash(undoTrash, "restore");
+                    setUndoTrash([]);
+                    setNotice("已恢复笔记");
+                  })
+                }
+              >
+                撤销删除
+              </button>
+            )}
+            {undoMoveId && (
+              <button
+                onClick={() =>
+                  action(async () => {
+                    await window.uki.undoMove(undoMoveId);
+                    setUndoMoveId(null);
+                    setNotice("已撤销移动");
+                  })
+                }
+              >
+                撤销移动
+              </button>
+            )}
+            <button
+              aria-label="关闭反馈"
+              onClick={() => {
+                setNotice("");
+                setUndoTrash([]);
+                setUndoMoveId(null);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {selectedNotes.length > 0 && (
+          <div className="bulk-bar">
+            <span>已选当前页 {selectedNotes.length} 条笔记</span>
+            <select
+              aria-label="批量移动目标"
+              value={moveTarget}
+              onChange={(e) => {
+                setMoveTarget(e.target.value);
+                setMovePreview(false);
+              }}
+            >
+              <option value="">待整理</option>
+              {active.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.parentId ? "↳ " : ""}
+                  {t.title}
+                </option>
+              ))}
+            </select>
+            {workspace === "trash" ? (
+              <button
+                onClick={() =>
+                  action(async () => {
+                    await window.uki.trash(selectedNotes, "restore");
+                    setSelectedNotes([]);
+                  })
+                }
+              >
+                恢复所选
+              </button>
+            ) : (
+              <>
+                <button onClick={() => setMovePreview(true)}>移动预览</button>
+                <button
+                  onClick={() =>
+                    action(() => window.uki.exportNotes(selectedNotes))
+                  }
+                >
+                  导出所选…
+                </button>
+                <button
+                  onClick={() =>
+                    action(async () => {
+                      await window.uki.trash(selectedNotes, "trash");
+                      setUndoTrash(selectedNotes);
+                      setSelectedNotes([]);
+                      setNotice("已移入回收站");
+                    })
+                  }
+                >
+                  移入回收站
+                </button>
+              </>
+            )}
+            <button
+              onClick={() => {
+                setSelectedNotes([]);
+                setMovePreview(false);
+              }}
+            >
+              取消选择
+            </button>
+            {movePreview && (
+              <div className="inline-confirm">
+                <span>
+                  将 {selectedNotes.length} 条笔记及其讨论移动到“
+                  {active.find((t) => t.id === moveTarget)?.title ?? "待整理"}
+                  ”。
+                </span>
+                <button
+                  onClick={() =>
+                    action(async () => {
+                      const id = await window.uki.moveBatch(
+                        selectedNotes,
+                        moveTarget || null,
+                      );
+                      setUndoMoveId(id);
+                      setSelectedNotes([]);
+                      setMovePreview(false);
+                      setNotice("移动已完成");
+                    })
+                  }
+                >
+                  确认移动
+                </button>
+              </div>
+            )}
           </div>
         )}
         {newContent && (
@@ -777,6 +1018,20 @@ export function App() {
                   hasApiKey={data.settings.hasApiKey}
                   onResult={showResult}
                   onSource={externalSource}
+                  query={query}
+                  selected={selectedNotes.includes(item.value.id)}
+                  onSelect={() =>
+                    setSelectedNotes((s) =>
+                      s.includes(item.value.id)
+                        ? s.filter((id) => id !== item.value.id)
+                        : [...s, item.value.id],
+                    )
+                  }
+                  onDeleted={() => {
+                    setUndoTrash([item.value.id]);
+                    setNotice("已移入回收站");
+                  }}
+                  streaming={streaming}
                 />
               ) : item.kind === "structure" ? (
                 <StructureSuggestion
@@ -883,7 +1138,8 @@ export function App() {
             </div>
           )}
         </div>
-        {(!["review", "research"].includes(workspace) || !!state.draft) && (
+        {(!["review", "research", "trash", "favorites"].includes(workspace) ||
+          !!state.draft) && (
           <div className="composer">
             {workspace === "review" && (
               <p className="hint">
@@ -924,6 +1180,19 @@ export function App() {
               }}
             />
             <div className="composer-footer">
+              <button
+                title="将光标放入输入框后按 Win+H。听写由 Windows 处理，需要网络和麦克风；文字进入草稿后由你检查保存。"
+                onClick={() => {
+                  document
+                    .getElementById("capture")
+                    ?.focus({ preventScroll: true });
+                  setNotice(
+                    "按 Win+H 使用 Windows 系统听写，需要网络和麦克风。文字进入草稿，请检查后再保存。",
+                  );
+                }}
+              >
+                系统听写 · Win+H
+              </button>
               <span>
                 {saving ? "保存原文…" : "草稿仅本机保存 · Ctrl + Enter"}
               </span>
@@ -938,7 +1207,9 @@ export function App() {
           </div>
         )}
         <footer className="sync-status" role="status" title={data.syncStatus}>
-          {data.aiStatus}
+          <button onClick={() => setTaskPanel(true)} aria-label="打开 AI 任务">
+            {data.aiStatus}
+          </button>
           <span>{data.syncStatus}</span>
         </footer>
       </main>
@@ -961,7 +1232,20 @@ export function App() {
           onSettings={() => setSettings(true)}
           onResult={showResult}
           onSource={externalSource}
+          onLocate={(id) =>
+            action(async () => {
+              setReturnWorkspace(workspace);
+              await navigate("all");
+              const d = await window.uki.detail(id);
+              setQuery(d.note.title);
+              patch({ query: d.note.title, before: undefined, openIds: [id] });
+              setResultToShow(id);
+            })
+          }
         />
+      )}
+      {taskPanel && (
+        <TaskPanel onClose={() => setTaskPanel(false)} onAction={action} />
       )}
       {settings && (
         <SettingsModal

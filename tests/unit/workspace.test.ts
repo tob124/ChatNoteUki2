@@ -231,9 +231,10 @@ describe("versioned library and workspace", () => {
       "初始原文",
       "更正原文",
     ]);
-    expect(s.workspace({ workspace: "all", query: "初始" }).items).toHaveLength(
-      1,
-    );
+    expect(
+      s.workspace({ workspace: "all", query: "初始", includeHistory: true })
+        .items,
+    ).toHaveLength(1);
   });
   it("deduplicates rejected suggestions with identical evidence and expires suggestions on corrected evidence", () => {
     const s = open(),
@@ -437,7 +438,7 @@ describe("persistent priority tasks", () => {
       inputVersions: [{ noteId: old.id, revision: 0 }],
     });
   });
-  it("does not partially save a malformed organization batch", async () => {
+  it("preserves valid organization items and reports rejected items as partial completion", async () => {
     const s = open(),
       id = s.capture({ raw: "依据" });
     s.addTask("organize", null, "deepseek-flash", [id]);
@@ -468,8 +469,8 @@ describe("persistent priority tasks", () => {
       }),
     };
     await new AiQueue(s, config, () => {}, transport).pump();
-    expect(s.snapshot().structures).toHaveLength(0);
-    expect(s.tasks()[0].status).toBe("failed");
+    expect(s.snapshot().structures).toHaveLength(1);
+    expect(s.tasks()[0].status).toBe("partial");
     expect(s.snapshot().usage).toHaveLength(1);
   });
   it("resumes budget tasks the next day but does not automatically retry interrupted billing", async () => {
@@ -631,6 +632,6 @@ describe("idle sync and capability cache", () => {
     expect(restored.snapshot()).toEqual(s.snapshot());
     expect(restored.detail(id).revisions).toEqual(s.detail(id).revisions);
     expect(restored.workspaceState("all").draft).toBe("");
-    expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(4);
+    expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
   });
 });

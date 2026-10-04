@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Settings, ThoughtEvent } from "../src/shared";
 import { decodeInbox, observeInbox } from "./inbox";
 import { Store, validateEvent } from "./store";
+import { redactEvent } from "./redaction";
 
 export interface DavResponse {
   status: number;
@@ -162,6 +163,7 @@ const manifestSchema = z.object({
     z.literal(2),
     z.literal(3),
     z.literal(4),
+    z.literal(5),
   ]),
   deviceId: z.string().uuid(),
   generation: z.number().int().nonnegative(),
@@ -175,6 +177,7 @@ const eventFileSchema = z.object({
     z.literal(2),
     z.literal(3),
     z.literal(4),
+    z.literal(5),
   ]),
   events: z.array(z.unknown()).max(100),
 });
@@ -247,7 +250,7 @@ export class SyncEngine {
     if (r.status === 404) return { value: null, etag: null };
     ok(r, "读取恢复清单");
     const decoded = JSON.parse(text(r));
-    if (![1, 2, 3, 4].includes(decoded.schemaVersion))
+    if (![1, 2, 3, 4, 5].includes(decoded.schemaVersion))
       throw new Error("云端资料格式不受此版本支持，请升级软件后再同步");
     return { value: manifestSchema.parse(decoded), etag: r.etag };
   }
@@ -366,9 +369,21 @@ export class SyncEngine {
       this.store.getMeta("manifestHash") !== hash(JSON.stringify(remote.value))
     ) {
       // A lost manifest response may have already published exactly these local events.
-      const known = new Set(this.store.eventsAfter().map((r) => r.event.id));
+      const known = new Map(
+        this.store
+          .eventsAfter()
+          .map((r) => [r.event.id, JSON.stringify(r.event)]),
+      );
       const remoteEvents = await this.readEvents(remote.value);
-      if (remoteEvents.some((e) => !known.has(e.id)))
+      if (
+        remoteEvents.some(
+          (e) =>
+            known.get(e.id) !==
+            JSON.stringify(
+              validateEvent(redactEvent(e, this.store.purgedIds())),
+            ),
+        )
+      )
         throw new Error("云端出现本机没有的事件，请先核对，未覆盖恢复清单");
     }
     for (let i = 0; i < rows.length;) {
@@ -384,7 +399,7 @@ export class SyncEngine {
       }
       const file = `events/${chunk[0].event.id}_${chunk.at(-1)!.event.id}.json`;
       const content = JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         events: chunk.map((r) => r.event),
       });
       const digest = hash(content);
@@ -402,9 +417,9 @@ export class SyncEngine {
       }
     }
     if (!rows.length && remote.value && strongEtag(remote.etag))
-      return { value: remote.value, etag: remote.etag };
+      return this.maintainPurges({ value: remote.value, etag: remote.etag });
     const next: Manifest = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       deviceId: this.store.getMeta("deviceId")!,
       generation: (remote.value?.generation ?? 0) + 1,
       batches,
@@ -430,7 +445,123 @@ export class SyncEngine {
     }
     this.store.setMeta("syncedSeq", String(rows.at(-1)?.seq ?? localSeq));
     this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
-    return { value: next, etag: verify.etag };
+    return this.maintainPurges({ value: next, etag: verify.etag });
+  }
+  private archivePath(batch: import("../src/shared").InboxBatch) {
+    return `imports/${batch.id}${batch.redacted ? "-redacted-" + hash(batch.snapshot).slice(0, 16) : ""}.txt`;
+  }
+  private async maintainPurges(remote: {
+    value: Manifest;
+    etag: string;
+  }): Promise<{ value: Manifest; etag: string }> {
+    if (!this.store.getMeta("purgePending")) return remote;
+    this.assertOwner(remote.value);
+    const ids = this.store.purgedIds();
+    const garbage = new Set<string>(
+      JSON.parse(this.store.getMeta("purgeGarbage") ?? "[]"),
+    );
+    const remember = () =>
+      this.store.setMeta("purgeGarbage", JSON.stringify([...garbage]));
+    const batches = [] as Manifest["batches"];
+    let changed = false;
+    for (const batch of remote.value.batches) {
+      const source = await this.dav.request("GET", batch.file);
+      ok(source, "读取待维护事件");
+      if (hash(text(source)) !== batch.sha256)
+        throw new Error("待维护云端批次校验失败，未清理原文件");
+      const parsed = eventFileSchema.parse(JSON.parse(text(source)));
+      const events = parsed.events.map((e) =>
+        redactEvent(validateEvent(e), ids),
+      );
+      const before = JSON.stringify(parsed.events),
+        after = JSON.stringify(events);
+      if (before === after) {
+        batches.push(batch);
+        continue;
+      }
+      const content = JSON.stringify({ schemaVersion: 5, events }),
+        digest = hash(content);
+      const stable =
+        digest.slice(0, 8) +
+        "-" +
+        digest.slice(8, 12) +
+        "-" +
+        digest.slice(12, 16) +
+        "-" +
+        digest.slice(16, 20) +
+        "-" +
+        digest.slice(20, 32);
+      const file = `events/${(events[0] as ThoughtEvent).id}_${stable}.json`;
+      const put = await this.dav.request("PUT", file, content, {
+        "If-None-Match": "*",
+      });
+      if (put.status !== 412) ok(put, "保存替代事件批次");
+      const check = await this.dav.request("GET", file);
+      ok(check, "核对替代事件批次");
+      if (hash(text(check)) !== digest)
+        throw new Error("替代批次校验失败，未发布清理");
+      batches.push({ file, sha256: digest });
+      garbage.add(batch.file);
+      remember();
+      changed = true;
+    }
+    for (const batch of this.store
+      .all<import("../src/shared").InboxBatch>("batches")
+      .filter((b) => b.redacted)) {
+      const path = this.archivePath(batch);
+      const put = await this.dav.request("PUT", path, batch.snapshot, {
+        "If-None-Match": "*",
+      });
+      if (put.status !== 412) ok(put, "保存脱敏导入归档");
+      const check = await this.dav.request("GET", path);
+      ok(check, "核对导入替代归档");
+      if (text(check) !== batch.snapshot)
+        throw new Error("导入替代归档校验失败");
+      garbage.add(`imports/${batch.id}.txt`);
+      remember();
+    }
+    if (changed) {
+      const next = {
+        ...remote.value,
+        schemaVersion: 5 as const,
+        generation: remote.value.generation + 1,
+        batches,
+        updatedAt: new Date().toISOString(),
+      };
+      const put = await this.dav.request(
+        "PUT",
+        "manifest.json",
+        JSON.stringify(next),
+        { "If-Match": remote.etag },
+      );
+      ok(put, "条件发布删除维护清单");
+      const confirmed = await this.manifest();
+      if (
+        JSON.stringify(confirmed.value) !== JSON.stringify(next) ||
+        !strongEtag(confirmed.etag)
+      )
+        throw new Error("删除维护发布结果待核对，原文件尚未清理");
+      remote = { value: next, etag: confirmed.etag };
+      this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
+    }
+    // Never delete anything still referenced by the confirmed manifest.
+    for (const file of garbage) {
+      if (remote.value.batches.some((b) => b.file === file)) continue;
+      const old = await this.dav.request("GET", file);
+      if (old.status !== 404) {
+        ok(old, "读取旧批次待清理");
+        if (!strongEtag(old.etag))
+          throw new Error("旧批次缺少强 ETag，保留待维护任务");
+        const removed = await this.dav.request("DELETE", file, undefined, {
+          "If-Match": old.etag,
+        });
+        if (removed.status !== 404) ok(removed, "清理已替代旧批次");
+      }
+      garbage.delete(file);
+      remember();
+    }
+    if (!garbage.size) this.store.setMeta("purgePending", "");
+    return remote;
   }
   private clearObserved() {
     this.store.appendMany(
@@ -447,7 +578,8 @@ export class SyncEngine {
       if (
         this.store.latestSeq() ===
           Number(this.store.getMeta("syncedSeq") ?? 0) &&
-        this.store.getMeta("manifestHash")
+        this.store.getMeta("manifestHash") &&
+        !this.store.getMeta("purgePending")
       ) {
         this.status = "没有待上传变化";
         this.lastSucceeded = true;
@@ -498,14 +630,14 @@ export class SyncEngine {
         await this.prepare();
         const archived = await this.dav.request(
           "PUT",
-          `imports/${batch.id}.txt`,
+          this.archivePath(batch),
           batch.snapshot,
           { "If-None-Match": "*" },
         );
         if (archived.status === 412) {
           const existing = await this.dav.request(
             "GET",
-            `imports/${batch.id}.txt`,
+            this.archivePath(batch),
           );
           ok(existing, "读取原文归档");
           if (text(existing) !== batch.snapshot)
@@ -513,6 +645,7 @@ export class SyncEngine {
         } else ok(archived, "归档原文");
       }
       if (
+        !this.store.getMeta("purgePending") &&
         !batch &&
         remote.value &&
         this.store.getMeta("manifestHash") ===
@@ -566,7 +699,7 @@ export class SyncEngine {
         }
         const archive = await this.dav.request(
           "PUT",
-          `imports/${batch.id}.txt`,
+          this.archivePath(batch),
           batch.snapshot,
           { "If-None-Match": "*" },
         );

@@ -1,6 +1,30 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UkiApi } from "../src/shared";
 const api: UkiApi = {
+  onProgress: (callback) => {
+    const listener = (
+      _event: unknown,
+      progress: { id: string; text: string },
+    ) => callback(progress);
+    ipcRenderer.on("uki:progress", listener);
+    return () => ipcRenderer.removeListener("uki:progress", listener);
+  },
+  aiTasks: () => ipcRenderer.invoke("uki:aiTasks"),
+  referenceTitles: (ids) => ipcRenderer.invoke("uki:referenceTitles", ids),
+  trash: (ids, operation) => ipcRenderer.invoke("uki:trash", ids, operation),
+  bookmark: (id, value) => ipcRenderer.invoke("uki:bookmark", id, value),
+  pin: (id, value) => ipcRenderer.invoke("uki:pin", id, value),
+  conversations: (id, before) =>
+    ipcRenderer.invoke("uki:conversations", id, before),
+  editCognition: (id, version, content) =>
+    ipcRenderer.invoke("uki:editCognition", id, version, content),
+  cancelAi: (id, kind) => ipcRenderer.invoke("uki:cancelAi", id, kind),
+  taskDetail: (id) => ipcRenderer.invoke("uki:taskDetail", id),
+  exportNotes: (ids, threadId) =>
+    ipcRenderer.invoke("uki:exportNotes", ids, threadId),
+  moveBatch: (ids, threadId) =>
+    ipcRenderer.invoke("uki:moveBatch", ids, threadId),
+  undoMove: (id) => ipcRenderer.invoke("uki:undoMove", id),
   research: (input) => ipcRenderer.invoke("uki:research", input),
   researchDetail: (id) => ipcRenderer.invoke("uki:researchDetail", id),
   researchSource: (id, sourceId) =>
@@ -17,8 +41,9 @@ const api: UkiApi = {
     ipcRenderer.invoke("uki:workspaceState", key, value),
   preferences: (value) => ipcRenderer.invoke("uki:preferences", value),
   thread: (input) => ipcRenderer.invoke("uki:thread", input),
-  correct: (id, raw) => ipcRenderer.invoke("uki:correct", id, raw),
-  title: (id, title) => ipcRenderer.invoke("uki:title", id, title),
+  correct: (id, raw, version) =>
+    ipcRenderer.invoke("uki:correct", id, raw, version),
+  title: (id, title, base) => ipcRenderer.invoke("uki:title", id, title, base),
   structure: (ids, decision, target, targets) =>
     ipcRenderer.invoke("uki:structure", ids, decision, target, targets),
   undo: (id) => ipcRenderer.invoke("uki:undo", id),

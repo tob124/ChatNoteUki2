@@ -30,6 +30,11 @@ export function RecordCard({
   hasApiKey = false,
   onResult = () => {},
   onSource = () => {},
+  selected = false,
+  onSelect,
+  query = "",
+  onDeleted,
+  streaming = {},
 }: {
   note: Note;
   threads: Thread[];
@@ -42,6 +47,11 @@ export function RecordCard({
   hasApiKey?: boolean;
   onResult?(task: AiTask): void;
   onSource?(ownerId: string, sourceId: string): void;
+  selected?: boolean;
+  onSelect?(): void;
+  query?: string;
+  onDeleted?(): void;
+  streaming?: Record<string, string>;
 }) {
   const [detail, setDetail] = useState<Awaited<
     ReturnType<UkiApi["detail"]>
@@ -50,6 +60,78 @@ export function RecordCard({
     [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [replying, setReplying] = useState(false);
+  const [busy, setBusy] = useState(false),
+    [confirmPurge, setConfirmPurge] = useState(false),
+    [deletedNow, setDeletedNow] = useState(false);
+  const [older, setOlder] = useState<Note[]>([]),
+    [beforeConversation, setBeforeConversation] = useState<string | null>(null);
+  const [editBase, setEditBase] = useState({
+    version: note.revision ?? 0,
+    title: note.title,
+  });
+  const editorKey = (kind: "body" | "title") => `edit:${note.id}:${kind}`;
+  const edit = async (kind: "body" | "title") => {
+    try {
+      const saved = await window.uki.workspaceState(editorKey(kind));
+      const current = await window.uki.detail(note.id);
+      setDetail(current);
+      setDraft(
+        saved.draft ||
+          (kind === "body"
+            ? (current.note.currentRaw ?? current.note.raw)
+            : current.note.title),
+      );
+      setEditBase({
+        version: saved.draft
+          ? (saved.parentRevision ?? current.note.revision ?? 0)
+          : (current.note.revision ?? 0),
+        title: saved.draft
+          ? (saved.parentTitle ?? current.note.title)
+          : current.note.title,
+      });
+      if (
+        saved.draft &&
+        ((kind === "body" &&
+          saved.parentRevision !== (current.note.revision ?? 0)) ||
+          (kind === "title" && saved.parentTitle !== current.note.title))
+      )
+        setError("恢复的草稿基于旧版本，请核对后重新开始编辑。");
+      setEditing(kind);
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  };
+  const localAction = async (fn: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const highlighted = (text: string) => {
+    const words = query.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return text;
+    const regex = new RegExp(
+      `(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+      "gi",
+    );
+    return text
+      .split(regex)
+      .map((part, i) =>
+        words.some(
+          (w) => part.toLocaleLowerCase() === w.toLocaleLowerCase(),
+        ) ? (
+          <mark key={i}>{part}</mark>
+        ) : (
+          part
+        ),
+      );
+  };
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     const form = card.current?.querySelector(".note-reply-form");
@@ -62,7 +144,13 @@ export function RecordCard({
     void window.uki
       .detail(note.id)
       .then((d) => {
-        if (active) setDetail(d);
+        if (active) {
+          setDetail(d);
+          setOlder([]);
+          setBeforeConversation(
+            d.discussions.length === 30 ? d.discussions[0].id : null,
+          );
+        }
       })
       .catch((e) => {
         if (active) setError(e.message);
@@ -84,6 +172,147 @@ export function RecordCard({
       id={`note-${note.id}`}
       data-unit={note.id}
     >
+      <div className="card-tools">
+        {onSelect && !note.parentNoteId && (
+          <input
+            type="checkbox"
+            aria-label={`选择 ${note.title}`}
+            checked={selected}
+            onChange={onSelect}
+          />
+        )}
+        {note.bookmarked && <span className="hint">已收藏</span>}
+        <details className="action-menu">
+          <summary aria-label={`更多操作 · ${note.title}`}>···</summary>
+          <div className="menu-items">
+            {note.deletedAt ? (
+              <>
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    onAction(() =>
+                      localAction(() => window.uki.trash([note.id], "restore")),
+                    )
+                  }
+                >
+                  恢复笔记
+                </button>
+                <button disabled={busy} onClick={() => setConfirmPurge(true)}>
+                  彻底删除…
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => {
+                    if (!expanded) onOpen();
+                    void edit("body");
+                  }}
+                >
+                  更正正文
+                </button>
+                <button
+                  onClick={() => {
+                    if (!expanded) onOpen();
+                    void edit("title");
+                  }}
+                >
+                  修改标题
+                </button>
+                <button
+                  onClick={() =>
+                    onAction(() =>
+                      localAction(() =>
+                        window.uki.bookmark(note.id, !note.bookmarked),
+                      ),
+                    )
+                  }
+                >
+                  {note.bookmarked ? "取消收藏" : "收藏笔记"}
+                </button>
+                <button
+                  onClick={() =>
+                    void localAction(async () => {
+                      const d = await window.uki.detail(note.id);
+                      await navigator.clipboard.writeText(
+                        d.note.currentRaw ?? d.note.raw,
+                      );
+                      setError("已复制原文");
+                    })
+                  }
+                >
+                  复制原文
+                </button>
+                <button
+                  onClick={() =>
+                    onAction(() =>
+                      localAction(() => window.uki.exportNotes([note.id])),
+                    )
+                  }
+                >
+                  导出笔记…
+                </button>
+                {["pending", "running"].includes(note.status) && (
+                  <button
+                    onClick={() =>
+                      onAction(() => window.uki.cancelAi(note.id, "note"))
+                    }
+                  >
+                    取消 AI 处理
+                  </button>
+                )}
+                <button
+                  className="danger-text"
+                  onClick={() =>
+                    onAction(() =>
+                      localAction(async () => {
+                        await window.uki.trash([note.id], "trash");
+                        setDeletedNow(true);
+                        onDeleted?.();
+                      }),
+                    )
+                  }
+                >
+                  移入回收站
+                </button>
+              </>
+            )}
+          </div>
+        </details>
+      </div>
+      {confirmPurge && (
+        <div className="inline-confirm" role="alert">
+          <p>
+            彻底删除将移除原文及更正版本。已生成的认知和分析保留，旧引用显示笔记已删除。
+          </p>
+          <button
+            disabled={busy}
+            onClick={() =>
+              onAction(() =>
+                localAction(async () => {
+                  await window.uki.trash([note.id], "purge");
+                  setConfirmPurge(false);
+                }),
+              )
+            }
+          >
+            确认彻底删除
+          </button>
+          <button onClick={() => setConfirmPurge(false)}>取消</button>
+        </div>
+      )}
+      {deletedNow && (
+        <button
+          onClick={() => onAction(() => window.uki.trash([note.id], "restore"))}
+        >
+          撤销删除
+        </button>
+      )}
+      {error && (
+        <p className="error" role="status">
+          {error}
+        </p>
+      )}
       <button className="record-open" onClick={onOpen} aria-expanded={expanded}>
         <div className="record-meta">
           <time>{dateLabel(note.createdAt)}</time>
@@ -98,16 +327,18 @@ export function RecordCard({
                     pending: "AI 待处理",
                     running: "AI 处理中",
                     failed: "AI 失败",
+                    partial: "AI 部分完成",
+                    cancelled: "AI 已取消",
                   } as const
                 )[note.status]
               }
             </span>
           )}
         </div>
-        <h2>{note.title}</h2>
+        <h2>{highlighted(note.title)}</h2>
         <p className={short ? "raw-preview" : "synopsis"}>
           <span className="preview-label">{short ? "原文" : "AI 摘要"}</span>
-          {short ? note.raw : note.synopsis || "待生成"}
+          {highlighted(short ? note.raw : note.synopsis || "待生成")}
         </p>
       </button>
       {expanded && (
@@ -136,12 +367,29 @@ export function RecordCard({
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    onAction(async () => {
-                      if (editing === "body")
-                        await window.uki.correct(note.id, draft);
-                      else await window.uki.title(note.id, draft);
-                      setEditing(null);
-                    });
+                    onAction(() =>
+                      localAction(async () => {
+                        if (editing === "body")
+                          await window.uki.correct(
+                            note.id,
+                            draft,
+                            editBase.version,
+                          );
+                        else
+                          await window.uki.title(
+                            note.id,
+                            draft,
+                            editBase.title,
+                          );
+                        await window.uki.workspaceState(editorKey(editing!), {
+                          draft: "",
+                          mode: "note",
+                          parentNoteId: null,
+                          openIds: [],
+                        });
+                        setEditing(null);
+                      }),
+                    );
                   }}
                 >
                   <label>
@@ -150,14 +398,27 @@ export function RecordCard({
                       aria-label={editing === "body" ? "更正正文" : "手动标题"}
                       autoFocus
                       value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      onChange={(e) => {
+                        const text = e.target.value;
+                        setDraft(text);
+                        void window.uki
+                          .workspaceState(editorKey(editing), {
+                            draft: text,
+                            mode: "note",
+                            parentNoteId: null,
+                            parentRevision: editBase.version,
+                            parentTitle: editBase.title,
+                            openIds: [],
+                          })
+                          .catch((e) => setError(e.message));
+                      }}
                       maxLength={editing === "body" ? 50000 : 60}
                     />
                   </label>
                   <p className="hint">
                     更正保留之前的原文版本。手动标题和归属不会被 AI 覆盖。
                   </p>
-                  <button className="primary" disabled={!draft.trim()}>
+                  <button className="primary" disabled={!draft.trim() || busy}>
                     保存更正
                   </button>{" "}
                   <button type="button" onClick={() => setEditing(null)}>
@@ -171,18 +432,50 @@ export function RecordCard({
                   <p>{full.reply}</p>
                 </div>
               )}
+              {full.partialReply && (
+                <div className="ai-reply">
+                  <div className="section-label">未完成的回复 · 计费待核对</div>
+                  <p>{full.partialReply}</p>
+                </div>
+              )}
               {detail.discussions.length > 0 && (
                 <details open={replying ? true : undefined}>
                   <summary>
                     关联讨论 · 最近 {detail.discussions.length} 条
                   </summary>
-                  {detail.discussions.map((d) => (
+                  {beforeConversation && (
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void localAction(async () => {
+                          const result = await window.uki.conversations(
+                            note.id,
+                            beforeConversation,
+                          );
+                          setOlder((items) => [...result.items, ...items]);
+                          setBeforeConversation(result.before);
+                        })
+                      }
+                    >
+                      更早对话
+                    </button>
+                  )}
+                  {[...older, ...detail.discussions].map((d) => (
                     <div className="discussion" key={d.id}>
                       <div className="section-label">
-                        继续讨论 · {dateLabel(d.createdAt)}
+                        继续讨论 · {dateLabel(d.createdAt)} · 起始正文 v
+                        {d.parentRevision ?? 0}
                       </div>
                       <p className="original">{d.currentRaw ?? d.raw}</p>
                       {d.reply && <p className="ai-reply">{d.reply}</p>}
+                      {!d.reply &&
+                        d.status === "running" &&
+                        streaming[d.id] && (
+                          <div className="ai-reply">
+                            <span className="section-label">AI 正在回答…</span>
+                            <p>{streaming[d.id]}</p>
+                          </div>
+                        )}
                       {d.error && <p className="error">{d.error}</p>}
                       {d.status === "failed" && (
                         <button
@@ -213,36 +506,23 @@ export function RecordCard({
                   {full.error}
                 </p>
               )}
-              {replying && <NoteReply note={full} onAction={onAction} />}
+              {replying && !note.deletedAt && (
+                <NoteReply note={full} onAction={onAction} />
+              )}
               <div className="record-actions">
-                {full.status === "failed" && (
-                  <button
-                    onClick={() => onAction(() => window.uki.retry(note.id))}
-                  >
-                    重试 AI 处理
-                  </button>
-                )}
+                {["failed", "partial", "cancelled"].includes(full.status) &&
+                  !note.deletedAt && (
+                    <button
+                      onClick={() => onAction(() => window.uki.retry(note.id))}
+                    >
+                      重试 AI 处理
+                    </button>
+                  )}
                 <button
                   onClick={() => setReplying((value) => !value)}
-                  disabled={thread?.archived}
+                  disabled={thread?.archived || !!note.deletedAt}
                 >
                   {replying ? "收起回复" : "回复 AI"}
-                </button>
-                <button
-                  onClick={() => {
-                    setEditing("body");
-                    setDraft(raw);
-                  }}
-                >
-                  更正正文
-                </button>
-                <button
-                  onClick={() => {
-                    setEditing("title");
-                    setDraft(full.title);
-                  }}
-                >
-                  修改标题
                 </button>
                 <select
                   aria-label="所属线程"

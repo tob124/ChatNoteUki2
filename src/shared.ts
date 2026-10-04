@@ -7,11 +7,11 @@ import type {
 } from "./research";
 
 export const stateContentSchema = z.object({
-  viewpoint: z.string().max(2000),
-  reasons: z.array(z.string().max(1000)).max(12),
-  uncertainties: z.array(z.string().max(1000)).max(12),
-  questions: z.array(z.string().max(1000)).max(12),
-  decisions: z.array(z.string().max(1000)).max(12),
+  viewpoint: z.string().max(200000),
+  reasons: z.array(z.string().max(64000)).max(200),
+  uncertainties: z.array(z.string().max(64000)).max(200),
+  questions: z.array(z.string().max(64000)).max(200),
+  decisions: z.array(z.string().max(64000)).max(200),
 });
 export type StateContent = z.infer<typeof stateContentSchema>;
 export const emptyContent = (): StateContent => ({
@@ -26,6 +26,7 @@ export interface Cognition extends StateContent {
   version: number;
 }
 export interface Thread {
+  pinned?: boolean;
   id: string;
   title: string;
   createdAt: string;
@@ -35,6 +36,11 @@ export interface Thread {
   revision?: number;
 }
 export interface Note {
+  partialReply?: string;
+  deletedAt?: string | null;
+  purged?: boolean;
+  bookmarked?: boolean;
+  componentErrors?: Record<string, string>;
   researchId?: string;
   id: string;
   raw: string;
@@ -46,7 +52,7 @@ export interface Note {
   source: "desktop" | "inbox";
   mode: "note" | "discussion";
   model: "deepseek-flash" | "deepseek-v4-pro";
-  status: "pending" | "running" | "done" | "failed";
+  status: "pending" | "running" | "done" | "failed" | "partial" | "cancelled";
   error: string | null;
   processing?: {
     input: string;
@@ -115,7 +121,14 @@ export interface AiTask {
   noteIds: string[];
   threadId: string | null;
   model: Note["model"];
-  status: "pending" | "running" | "done" | "failed" | "budget" | "cancelled";
+  status:
+    | "pending"
+    | "running"
+    | "done"
+    | "failed"
+    | "budget"
+    | "cancelled"
+    | "partial";
   research?: ResearchInput;
   checkpoint?: ResearchCheckpoint;
   researchStage?: ResearchCheckpoint["stage"];
@@ -146,6 +159,8 @@ export interface Recap {
   questions: string;
 }
 export interface WorkspaceQuery {
+  includeHistory?: boolean;
+  bookmarked?: boolean;
   workspace: string;
   before?: number;
   date?: string;
@@ -167,6 +182,11 @@ export interface WorkspacePage {
   newestSeq: number;
 }
 export interface WorkspaceState {
+  query?: string;
+  searchIn?: "original" | "reply";
+  aiFilter?: "all" | "pending" | "failed";
+  includeHistory?: boolean;
+  bookmarked?: boolean;
   draft: string;
   mode: "note" | "discussion";
   parentNoteId: string | null;
@@ -238,6 +258,9 @@ export interface InboxItem {
   raw: string;
 }
 export interface InboxBatch {
+  snapshotHash?: string;
+  itemHashes?: string[];
+  redacted?: boolean;
   id: string;
   snapshot: string;
   etag: string | null;
@@ -246,6 +269,7 @@ export interface InboxBatch {
   createdAt: string;
 }
 export interface Usage {
+  estimated?: boolean;
   searches?: number;
   id: string;
   input: number;
@@ -267,13 +291,15 @@ export interface Snapshot {
   recaps: Recap[];
 }
 export const settingsSchema = z.object({
+  hardBudget: z.boolean().default(false),
+  contextTokens: z.number().int().min(8000).max(131072).default(32768),
   davUrl: z.string().url().default("https://dav.jianguoyun.com/dav/"),
   davUser: z.string().max(300).default(""),
   directory: z.string().max(200).default("ChatNoteUki"),
   autoSync: z.boolean().default(true),
   syncIntervalSeconds: z.number().int().min(60).max(600).default(60),
-  dailyInputLimit: z.number().int().min(8000).max(1000000).default(100000),
-  dailyOutputLimit: z.number().int().min(1000).max(100000).default(12000),
+  dailyInputLimit: z.number().int().min(8000).max(10000000).default(500000),
+  dailyOutputLimit: z.number().int().min(1000).max(1000000).default(100000),
   structureSensitivity: z.enum(["保守", "均衡", "积极"]).default("保守"),
 });
 export type Settings = z.infer<typeof settingsSchema>;
@@ -313,9 +339,9 @@ export type Capture = z.input<typeof captureSchema>;
 export const aiNoteSchema = z.object({
   threadId: z.string().uuid().nullable(),
   newThreadTitle: z.string().max(60).nullable(),
-  title: z.string().trim().min(1).max(24),
-  synopsis: z.string().max(80),
-  reply: z.string().trim().min(1).max(3000),
+  title: z.string().trim().min(1).max(64000),
+  synopsis: z.string().max(64000),
+  reply: z.string().trim().max(200000),
   newParentId: z.string().uuid().nullable().optional(),
   threadDescription: z.string().max(500).optional(),
 });
@@ -352,12 +378,54 @@ export const eventSchema = z.object({
     "task.updated",
     "recap.added",
     "research.added",
+    "ai.attempt",
+    "note.trashed",
+    "note.restored",
+    "note.purged",
+    "note.bookmarked",
+    "note.cancelled",
+    "thread.pinned",
+    "cognition.edited",
+    "material.updated",
+    "notes.move-batch",
+    "notes.undo-move",
   ]),
   payload: z.unknown(),
   createdAt: z.string().datetime(),
 });
 export type ThoughtEvent = z.infer<typeof eventSchema>;
 export interface UkiApi {
+  onProgress(
+    callback: (progress: { id: string; text: string }) => void,
+  ): () => void;
+  aiTasks(): Promise<
+    {
+      id: string;
+      kind: "note" | "task";
+      title: string;
+      status: string;
+      stage: string;
+      error: string | null;
+    }[]
+  >;
+  referenceTitles(ids: string[]): Promise<Record<string, string>>;
+  trash(ids: string[], operation: "trash" | "restore" | "purge"): Promise<void>;
+  bookmark(id: string, value: boolean): Promise<void>;
+  pin(id: string, value: boolean): Promise<void>;
+  conversations(
+    id: string,
+    before?: string,
+  ): Promise<{ items: Note[]; before: string | null }>;
+  editCognition(
+    threadId: string,
+    baseVersion: number,
+    content: StateContent,
+  ): Promise<void>;
+  cancelAi(id: string, kind: "note" | "task"): Promise<void>;
+  taskDetail(id: string): Promise<AiTask>;
+  exportNotes(ids: string[], threadId?: string): Promise<boolean>;
+  moveBatch(ids: string[], threadId: string | null): Promise<string>;
+  undoMove(id: string): Promise<void>;
   research(input: ResearchInput): Promise<string>;
   researchDetail(id: string): Promise<Research>;
   researchSource(ownerId: string, sourceId: string): Promise<ResearchSource>;
@@ -395,8 +463,8 @@ export interface UkiApi {
     parentId: string | null;
     archived?: boolean;
   }): Promise<string>;
-  correct(id: string, raw: string): Promise<void>;
-  title(id: string, title: string): Promise<void>;
+  correct(id: string, raw: string, baseVersion?: number): Promise<void>;
+  title(id: string, title: string, baseTitle?: string): Promise<void>;
   structure(
     ids: string[],
     decision: "accept" | "reject" | "defer",

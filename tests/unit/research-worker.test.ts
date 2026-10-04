@@ -112,7 +112,7 @@ it("research task saves exact original versions, sources and result atomically, 
   expect(replayed.snapshot().researches).toEqual([saved]);
   const dav = new FakeDav();
   await new SyncEngine(s, dav, () => {}).backup();
-  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(4);
+  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
   const recovered = makeStore();
   await new SyncEngine(recovered, dav, () => {}).restore();
   expect(recovered.snapshot().researches).toEqual([saved]);
@@ -203,7 +203,7 @@ it("exhausted daily budget defers a research task before dispatching any search"
     s,
     {
       apiKey: () => "test-key",
-      settings: () => settingsSchema.parse({ dailyInputLimit: 8000 }),
+      settings: () => settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000 }),
     },
     () => {},
     { complete },

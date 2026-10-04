@@ -64,7 +64,7 @@ it("rejects fabricated, ambiguous and missing recap evidence and reports only fi
     "明确表达",
   );
 });
-it("normalizes empty optional note metadata and bounds generated titles/replies without altering original text", () => {
+it("normalizes empty optional note metadata and preserves complete generated titles/replies without altering original text", () => {
   const s = open(),
     n = s.createNote({ raw: "😀真实原话" });
   const result = parseNoteResult(
@@ -80,26 +80,21 @@ it("normalizes empty optional note metadata and bounds generated titles/replies 
   expect(result.newThreadTitle).toBeNull();
   expect(result.threadDescription).toBe("");
   expect(result.synopsis).toBe("");
-  expect(result.title.length).toBeLessThanOrEqual(24);
-  expect(result.reply.length).toBeLessThanOrEqual(150);
-  expect(result.reply.endsWith("…")).toBe(true);
+  expect(result.title).toBe("😀".repeat(20));
+  expect(result.reply).toBe("回应".repeat(100));
+  expect(result.reply.endsWith("…")).toBe(false);
   expect(n.raw).toBe("😀真实原话");
   expect(() =>
     parseNoteResult({ title: "标题", synopsis: "", reply: null }, n),
   ).toThrow("回应");
   const long = s.createNote({ raw: "中文".repeat(100) });
-  expect(() =>
-    parseNoteResult(
-      { title: "标题", synopsis: "摘要".repeat(60), reply: "回应" },
-      long,
-    ),
-  ).toThrow("摘要");
+  expect(parseNoteResult({ title: "标题", synopsis: "摘要".repeat(60), reply: "回应" },long).synopsis).toBe("摘要".repeat(60));
 });
 it.each([
   { content: "", finishReason: "stop", error: "空内容" },
   { content: '{"title":"unfinished', finishReason: "length", error: "被截断" },
 ])(
-  "records usage for empty/truncated responses and never automatically retries them",
+  "records usage for empty/truncated responses and bounds regeneration and records every confirmed attempt",
   async (response) => {
     const s = open(),
       note = s.capture({ raw: "不要丢失的原文" });
@@ -117,10 +112,10 @@ it.each([
     );
     await ai.pump();
     await ai.pump();
-    expect(calls).toBe(1);
+    expect(calls).toBe(response.finishReason === "length" ? 2 : 3);
     expect(s.note(note).error).toContain(response.error);
     expect(s.note(note).raw).toBe("不要丢失的原文");
-    expect(s.snapshot().usage).toHaveLength(1);
+    expect(s.snapshot().usage).toHaveLength(calls);
   },
 );
 it("tracks new units in each workspace without treating tasks, usage or other threads as new content", () => {

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { CognitionEditor } from "./CognitionEditor";
 import type {
   Evidence,
   AiTask,
@@ -32,6 +33,7 @@ export function ResourcesPanel({
   onResult,
   externalReference,
   onSource,
+  onLocate,
 }: {
   resources: ThreadResources | null;
   reference: Reference | null;
@@ -47,6 +49,7 @@ export function ResourcesPanel({
   onResult(task: AiTask): void;
   externalReference?: ExternalReference | null;
   onSource(ownerId: string, sourceId: string): void;
+  onLocate?(id: string): void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     previous = useRef<"normal" | "wide">("normal");
@@ -56,6 +59,7 @@ export function ResourcesPanel({
     return () => dialog.current?.close();
   }, [panel]);
   const data = resources;
+  const [editingCognition, setEditingCognition] = useState(false);
   const recapTask = tasks
     .filter((t) => t.threadId === data?.thread?.id && t.kind === "recap")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -151,10 +155,29 @@ export function ResourcesPanel({
               · 引用版本 {reference.revision}
             </p>
             <p className="original reference-raw">
-              {reference.detail.revisions.find(
-                (r) => r.revision === reference.revision,
-              )?.raw ?? "引用版本不存在"}
+              {reference.detail.note.deletedAt
+                ? "笔记已删除"
+                : (reference.detail.revisions.find(
+                    (r) => r.revision === reference.revision,
+                  )?.raw ?? "引用版本不存在")}
             </p>
+            {!reference.detail.note.deletedAt && (
+              <div className="record-actions">
+                <button
+                  onClick={() =>
+                    onEvidence({
+                      noteId: reference.detail.note.id,
+                      revision: reference.detail.note.revision ?? 0,
+                    })
+                  }
+                >
+                  查看最新正文
+                </button>
+                <button onClick={() => onLocate?.(reference.detail.note.id)}>
+                  定位原记录
+                </button>
+              </div>
+            )}
             {reference.revision !== (reference.detail.note.revision ?? 0) && (
               <p className="hint">
                 正文后来已更正。此处保留建议当时引用的文字。
@@ -175,11 +198,40 @@ export function ResourcesPanel({
                   {data.thread.archived ? "历史资料" : "活动问题"}
                 </p>
                 <button onClick={() => onManage(data.thread!)}>管理问题</button>
+                <button
+                  onClick={() =>
+                    onAction(() =>
+                      window.uki.pin(data.thread!.id, !data.thread!.pinned),
+                    )
+                  }
+                >
+                  {data.thread.pinned ? "取消置顶" : "置顶问题"}
+                </button>
+                <button
+                  onClick={() =>
+                    onAction(() => window.uki.exportNotes([], data.thread!.id))
+                  }
+                >
+                  导出此问题…
+                </button>
                 <section className="resource-section">
                   <span className="section-label">
                     已确认认知 · v{data.cognition.version}
                   </span>
                   <CognitionContent value={data.cognition} />
+                  {!data.thread.archived && (
+                    <button onClick={() => setEditingCognition((v) => !v)}>
+                      手动编辑认知
+                    </button>
+                  )}
+                  {editingCognition && (
+                    <CognitionEditor
+                      key={data.thread.id}
+                      value={data.cognition}
+                      onAction={onAction}
+                      onClose={() => setEditingCognition(false)}
+                    />
+                  )}
                 </section>
                 {!data.thread.archived && (
                   <AnalysisControls
@@ -202,7 +254,7 @@ export function ResourcesPanel({
                     hasApiKey={hasApiKey}
                     onAction={onAction}
                     onResult={onResult}
-                  onSource={onSource}
+                    onSource={onSource}
                   />
                 )}
                 {data.recaps.map((r) => (
@@ -231,6 +283,22 @@ export function ResourcesPanel({
                             版本 {c.version}
                           </span>
                           <CognitionContent value={c} />
+                          {c.version !== data.cognition.version &&
+                            !data.thread!.archived && (
+                              <button
+                                onClick={() =>
+                                  onAction(() =>
+                                    window.uki.editCognition(
+                                      data.thread!.id,
+                                      data.cognition.version,
+                                      c,
+                                    ),
+                                  )
+                                }
+                              >
+                                将此版本恢复为新版本
+                              </button>
+                            )}
                         </section>
                       ))}
                   </details>

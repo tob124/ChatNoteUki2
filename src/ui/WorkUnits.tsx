@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   Evidence,
   Proposal,
@@ -41,11 +41,26 @@ export function EvidenceLinks({
   refs: Evidence[];
   onEvidence(r: Evidence): void;
 }) {
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const ids = refs.map((r) => r.noteId).join(",");
+  useEffect(() => {
+    let active = true;
+    if (ids)
+      void window.uki
+        .referenceTitles([...new Set(ids.split(","))])
+        .then((value) => {
+          if (active) setTitles(value);
+        })
+        .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [ids]);
   return (
     <div className="evidence">
       {refs.map((r, i) => (
         <button key={r.noteId + ":" + r.revision} onClick={() => onEvidence(r)}>
-          原文 {i + 1} · v{r.revision}
+          {titles[r.noteId] ?? `原文 ${i + 1}`} · v{r.revision}
         </button>
       ))}
     </div>

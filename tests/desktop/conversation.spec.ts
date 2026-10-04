@@ -17,14 +17,14 @@ test("note card: isolated multi-round replies and draft restart without thread a
       (globalThis as any).conversationInputs = [];
       globalThis.fetch = async (_url, init) => {
         const body = JSON.parse(String(init?.body)),
-          context = JSON.parse(body.messages[1].content);
+          context = JSON.parse(body.input[0].content);
         (globalThis as any).conversationInputs.push(context);
         return new Response(
           JSON.stringify({
             choices: [
               {
                 message: {
-                  content: JSON.stringify({
+                  content: body.stream ? `AI 回答：${context.raw}` : JSON.stringify({
                     threadId: null,
                     newThreadTitle: null,
                     title: context.origin ? "笔记追问" : "单条笔记",

@@ -144,7 +144,7 @@ app
           "utf8",
         ),
       );
-      assert.equal(manifest.schemaVersion, 4);
+      assert.equal(manifest.schemaVersion, 5);
       report.cloudFormat = 4;
     } finally {
       stores.forEach((s) => s.close());

@@ -16,32 +16,80 @@ export function ThreadDialog({
     [title, setTitle] = useState(thread?.title ?? ""),
     [description, setDescription] = useState(thread?.description ?? ""),
     [parentId, setParent] = useState(thread?.parentId ?? "");
+  const [closing, setClosing] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const close = () => {
+    if (busy) return;
+    if (
+      title !== (thread?.title ?? "") ||
+      description !== (thread?.description ?? "") ||
+      parentId !== (thread?.parentId ?? "")
+    )
+      setClosing(true);
+    else onClose();
+  };
   useEffect(() => {
     ref.current?.showModal();
     return () => ref.current?.close();
   }, []);
   return (
-    <dialog className="thread-dialog" ref={ref} onCancel={onClose}>
+    <dialog
+      className="thread-dialog"
+      ref={ref}
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (busy) return;
+          setBusy(true);
+          setError("");
           onAction(async () => {
-            await window.uki.thread({
-              id: thread?.id,
-              title,
-              description,
-              parentId: parentId || null,
-            });
-            onClose();
+            try {
+              await window.uki.thread({
+                id: thread?.id,
+                title,
+                description,
+                parentId: parentId || null,
+              });
+              onClose();
+            } catch (e) {
+              setError(String(e instanceof Error ? e.message : e));
+            } finally {
+              setBusy(false);
+            }
           });
         }}
       >
         <header>
           <h2>{thread ? "管理问题" : "新建问题"}</h2>
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={close} disabled={busy}>
             关闭
           </button>
         </header>
+        {closing && (
+          <div className="inline-confirm" role="alert">
+            <p>问题信息有未保存修改。</p>
+            <button type="submit" disabled={busy}>
+              保存并关闭
+            </button>
+            <button type="button" onClick={onClose}>
+              放弃修改
+            </button>
+            <button type="button" onClick={() => setClosing(false)}>
+              继续编辑
+            </button>
+          </div>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <label>
           问题名称
           <input
@@ -78,7 +126,9 @@ export function ThreadDialog({
           最多主问题与子问题两层。已有子问题的主问题不能直接降级。
         </p>
         <div className="record-actions">
-          <button className="primary">保存问题</button>
+          <button className="primary" disabled={busy}>
+            保存问题
+          </button>
           {thread && (
             <button
               type="button"

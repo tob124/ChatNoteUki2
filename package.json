@@ -17,7 +17,10 @@
     "verify:secrets": "node scripts/check-secrets.mjs"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "^0.2.0",
     "cheerio": "^1.2.0",
+    "mammoth": "^1.13.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zod": "^4.3.6"
@@ -46,7 +49,8 @@
     "files": [
       "dist/**",
       "dist-electron/**",
-      "package.json"
+      "package.json",
+      "resources/tokenizers/**"
     ],
     "win": {
       "target": "nsis",

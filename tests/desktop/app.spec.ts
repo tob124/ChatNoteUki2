@@ -32,8 +32,8 @@ test("Windows desktop: immediate save, metadata, search, cognition, restart and 
   await app.evaluate(() => {
     globalThis.fetch = async (_input, init) => {
       const body = JSON.parse(String(init?.body));
-      const context = JSON.parse(body.messages[1].content);
-      const proposal = body.messages[0].content.includes("输出 after");
+      const context = JSON.parse(body.input[0].content);
+      const proposal = body.instructions.includes("输出 after");
       const result = proposal
         ? {
             after: {
@@ -55,7 +55,7 @@ test("Windows desktop: immediate save, metadata, search, cognition, restart and 
           };
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: JSON.stringify(result) } }],
+          choices: [{ message: { content: body.stream ? (result as any).reply : JSON.stringify(result) } }],
           usage: { prompt_tokens: 100, completion_tokens: 80 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },

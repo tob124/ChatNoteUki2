@@ -11,6 +11,8 @@ export function SettingsModal({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings>({
+    hardBudget: data.settings.hardBudget,
+    contextTokens: data.settings.contextTokens,
     davUrl: data.settings.davUrl,
     davUser: data.settings.davUser,
     directory: data.settings.directory,
@@ -23,6 +25,30 @@ export function SettingsModal({
   const [key, setKey] = useState("");
   const [password, setPassword] = useState("");
   const [confirmRestore, setConfirmRestore] = useState(false);
+  const [closing, setClosing] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const dirty =
+    JSON.stringify(settings) !==
+      JSON.stringify({
+        hardBudget: data.settings.hardBudget,
+        contextTokens: data.settings.contextTokens,
+        davUrl: data.settings.davUrl,
+        davUser: data.settings.davUser,
+        directory: data.settings.directory,
+        autoSync: data.settings.autoSync,
+        syncIntervalSeconds: data.settings.syncIntervalSeconds,
+        dailyInputLimit: data.settings.dailyInputLimit,
+        dailyOutputLimit: data.settings.dailyOutputLimit,
+        structureSensitivity: data.settings.structureSensitivity,
+      }) ||
+    !!key ||
+    !!password;
+  const close = () => {
+    if (busy) return;
+    if (dirty) setClosing(true);
+    else onClose();
+  };
   const [report, setReport] = useState<Awaited<
       ReturnType<UkiApi["dataReport"]>
     > | null>(null),
@@ -32,28 +58,68 @@ export function SettingsModal({
     return () => dialog.current?.close();
   }, []);
   return (
-    <dialog ref={dialog} className="settings-dialog" onCancel={onClose}>
+    <dialog
+      ref={dialog}
+      className="settings-dialog"
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (busy) return;
+          setBusy(true);
+          setError("");
           onAction(async () => {
-            await window.uki.saveSettings(
-              settings,
-              key || undefined,
-              password || undefined,
-            );
-            setKey("");
-            setPassword("");
-            onClose();
+            try {
+              await window.uki.saveSettings(
+                settings,
+                key || undefined,
+                password || undefined,
+              );
+              setKey("");
+              setPassword("");
+              onClose();
+            } catch (e) {
+              setError(String(e instanceof Error ? e.message : e));
+            } finally {
+              setBusy(false);
+            }
           });
         }}
       >
         <header>
           <h2>设置与数据</h2>
-          <button type="button" aria-label="关闭设置" onClick={onClose}>
+          <button
+            type="button"
+            aria-label="关闭设置"
+            onClick={close}
+            disabled={busy}
+          >
             关闭
           </button>
         </header>
+        {closing && (
+          <div className="inline-confirm" role="alert">
+            <p>设置有未保存修改。凭据输入不会自动保存。</p>
+            <button disabled={busy} type="submit">
+              保存并关闭
+            </button>
+            <button type="button" onClick={onClose}>
+              放弃修改
+            </button>
+            <button type="button" onClick={() => setClosing(false)}>
+              继续编辑
+            </button>
+          </div>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <h3>DeepSeek</h3>
         <label>
           结构建议敏感度
@@ -93,11 +159,11 @@ export function SettingsModal({
         </p>
         <div className="budget-fields">
           <label>
-            每日输入预算（tokens）
+            每日输入提醒阈值（tokens）
             <input
               type="number"
               min={8000}
-              max={1000000}
+              max={10000000}
               value={settings.dailyInputLimit}
               onChange={(e) =>
                 setSettings({
@@ -108,11 +174,11 @@ export function SettingsModal({
             />
           </label>
           <label>
-            每日输出预算（tokens）
+            每日输出提醒阈值（tokens）
             <input
               type="number"
               min={1000}
-              max={100000}
+              max={1000000}
               value={settings.dailyOutputLimit}
               onChange={(e) =>
                 setSettings({
@@ -123,6 +189,36 @@ export function SettingsModal({
             />
           </label>
         </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.hardBudget}
+            onChange={(e) =>
+              setSettings({ ...settings, hardBudget: e.target.checked })
+            }
+          />
+          启用每日硬上限（达到阈值后暂停请求）
+        </label>
+        <label>
+          上下文容量（tokens）
+          <input
+            type="number"
+            min={8000}
+            max={131072}
+            step={1}
+            value={settings.contextTokens}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                contextTokens: Number(e.target.value),
+              })
+            }
+          />
+        </label>
+        <p className="hint">
+          默认阈值只提醒。输入使用随安装包提供的离线 tokenizer 估算，实际用量以
+          API 返回为准；计费不明的中断等待手动重试。
+        </p>
         <h3>坚果云 WebDAV</h3>
         <label>
           服务器地址
@@ -353,6 +449,7 @@ export function SettingsModal({
                   failed: "失败",
                   budget: "预算等待",
                   cancelled: "已取消",
+                  partial: "部分完成",
                 }[t.status]
               }{" "}
               {t.error}

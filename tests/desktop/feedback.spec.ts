@@ -26,8 +26,8 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
       runtime.analysisInputs = [];
       globalThis.fetch = async (_url, init) => {
         const body = JSON.parse(String(init?.body)),
-          context = JSON.parse(body.messages[1].content),
-          instructions = body.messages[0].content;
+          context = JSON.parse(body.input[0].content),
+          instructions = body.instructions;
         if (
           instructions.includes('"expressed"') ||
           instructions.includes("输出 after")
@@ -112,11 +112,11 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     ).toBe(1);
     await app.evaluate(() => {
       const job = (globalThis as any).analysisPending.shift();
-      job.resolve(new Response("", { status: 500 }));
+      job.resolve(new Response("", { status: 400 }));
     });
     await expect(panel.getByText("生成失败", { exact: true })).toBeVisible();
     await expect(
-      panel.getByText("DeepSeek 请求失败（HTTP 500）", { exact: true }),
+      panel.getByText("DeepSeek 请求失败（HTTP 400）", { exact: true }),
     ).toBeVisible();
     await panel.getByRole("button", { name: "手动重试", exact: true }).click();
     await expect(
@@ -168,7 +168,7 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     await expect(page.locator(".main-pane .recap")).toContainText(
       "「王者匹配机制是否公平」值得观察",
     );
-    await page.getByRole("button", { name: "资料", exact: true }).click();
+    await page.getByRole("button", { name: "概览", exact: true }).click();
     panel = page.getByRole("complementary", { name: "备查资料" });
     await panel
       .getByRole("button", { name: "检查认知变化", exact: true })
@@ -182,12 +182,13 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
       .click();
     await expect(panel).toBeHidden();
     await expect(page.locator(".main-pane .proposal")).toBeVisible();
-    await page.getByRole("button", { name: "资料", exact: true }).click();
+    await page.getByRole("button", { name: "概览", exact: true }).click();
     panel = page.getByRole("complementary", { name: "备查资料" });
     await page.evaluate(async () => {
       const { settings } = await window.uki.bootstrap();
       await window.uki.saveSettings({
         ...settings,
+        hardBudget: true,
         dailyInputLimit: 8000,
         dailyOutputLimit: 3000,
       });

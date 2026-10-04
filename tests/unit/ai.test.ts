@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "../../electron/store";
 import { AiQueue, buildContext, type AiTransport } from "../../electron/ai";
 import { settingsSchema } from "../../src/shared";
+import { countTokens } from "../../electron/token-count";
 import { randomUUID } from "node:crypto";
 const stores: Store[] = [];
 function open() {
@@ -81,11 +82,11 @@ describe("bounded AI processing", () => {
     const s = open(),
       contexts: any[] = [];
     const ai = new AiQueue(s, config, () => {}, {
-      complete: async (_key, _model, _system, text) => {
+      complete: async (_key, _model, _system, text, _max, _signal, options) => {
         const context = JSON.parse(text);
         contexts.push(context);
         return {
-          content: JSON.stringify({
+          content: options?.text ? `AI 回答 ${contexts.length}` : JSON.stringify({
             threadId: null,
             newThreadTitle: "建议问题",
             title: "标题",
@@ -247,13 +248,13 @@ describe("bounded AI processing", () => {
     const ai = new AiQueue(s, config, () => {}, transport);
     await ai.pump();
     await ai.pump();
-    expect(calls).toBe(1);
-    expect(s.snapshot().notes[0].status).toBe("failed");
+    expect(calls).toBe(2);
+    expect(s.snapshot().notes[0].status).toBe("partial");
     expect(s.snapshot().notes[0].raw).toBe("不可丢失");
-    expect(s.snapshot().usage).toHaveLength(1);
+    expect(s.snapshot().usage).toHaveLength(2);
     s.append("note.retried", { id });
     await ai.pump();
-    expect(calls).toBe(2);
+    expect(calls).toBe(2); // Reuses the durable response; does not bill the same incomplete step again.
   });
   it("does not call AI when key or daily budget is unavailable", async () => {
     const s = open();
@@ -279,11 +280,11 @@ describe("bounded AI processing", () => {
     const limited = {
       ...config,
       settings: () =>
-        settingsSchema.parse({ dailyInputLimit: 8000, dailyOutputLimit: 1000 }),
+        settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000, dailyOutputLimit: 3000 }),
     };
     s.append("usage.recorded", {
       id: crypto.randomUUID(),
-      input: 1,
+      input: 8000,
       output: 1,
       model: "deepseek-flash",
       createdAt: new Date().toISOString(),
@@ -296,9 +297,9 @@ describe("bounded AI processing", () => {
     const s = open();
     for (let i = 0; i < 30; i++) s.capture({ raw: "城市密度".repeat(100) + i });
     const context = buildContext(s, "城市密度", null);
-    expect(Buffer.byteLength(context)).toBeLessThan(7400);
-    expect(JSON.parse(context).history.length).toBeLessThanOrEqual(10);
-    expect(() => buildContext(s, "想法".repeat(2000), null)).toThrow("预算");
+    expect(countTokens(context)).toBeLessThan(32768);
+    expect(JSON.parse(context).history.length).toBeLessThanOrEqual(30);
+    expect(() => buildContext(s, "想法".repeat(50000), null)).toThrow("预算");
   });
   it("preserves a manual move made while an AI request is in flight", async () => {
     const s = open();
@@ -348,7 +349,7 @@ describe("bounded AI processing", () => {
       }),
     };
     await new AiQueue(s, config, () => {}, transport).pump();
-    expect(s.snapshot().notes[0].status).toBe("failed");
+    expect(s.snapshot().notes[0].status).toBe("partial");
     expect(s.snapshot().threads).toHaveLength(0);
     expect(s.snapshot().notes[0].raw).toBe("新想法");
   });
@@ -366,7 +367,7 @@ describe("bounded AI processing", () => {
     const limited = {
       ...config,
       settings: () =>
-        settingsSchema.parse({ dailyInputLimit: 8000, dailyOutputLimit: 1000 }),
+        settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000, dailyOutputLimit: 2500 }),
     };
     await new AiQueue(s, limited, () => {}, transport).pump();
     expect(calls).toBe(1);

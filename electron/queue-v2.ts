@@ -11,7 +11,9 @@ import {
 import { Store, structureInputSchema } from "./store";
 import { DeepSeek, safeAiError, type AiConfig, type AiTransport } from "./ai";
 import { parseRecapResult, recapInstructions } from "./recap-result";
-import { parseNoteResult } from "./note-result";
+import { parseNoteParts } from "./note-result";
+import { AiRequests, BudgetError, PartialResultError } from "./ai-request";
+import { countTokens } from "./token-count";
 import { researchInputSchema, type ResearchInput } from "../src/research";
 import { DeepSeekSearch, type ResearchSearch } from "./research-search";
 import { readPublicPage } from "./public-source";
@@ -30,6 +32,7 @@ export function buildContext(
   excludeId: string | null = null,
   parent: Evidence | null = null,
   includeDialogue = false,
+  inputLimit = 32768,
 ) {
   const words = [
     ...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(raw),
@@ -98,7 +101,7 @@ export function buildContext(
       aiReplyTruncated?: boolean;
     }[],
   };
-  if (Buffer.byteLength(JSON.stringify(payload) + system) > 6200)
+  if (countTokens(JSON.stringify(payload) + system) > inputLimit - 2048)
     throw new Error(
       "原文或当前认知超出本次上下文预算。原文已保存，请拆分长笔记后重试。",
     );
@@ -137,24 +140,24 @@ export function buildContext(
         : undefined;
     payload.history.push({
       id: n.id,
-      raw: text.slice(0, 600),
+      raw: text.slice(0, 6000),
       title: n.title,
       revision,
       createdAt: n.createdAt,
-      truncated: text.length > 600,
+      truncated: text.length > 6000,
       mode: n.mode,
       parentNoteId: n.parentNoteId ?? null,
       parentRevision: n.parentRevision,
       ...(reply !== undefined
         ? {
-            aiReply: reply?.slice(0, 800) ?? null,
-            aiReplyTruncated: !!reply && reply.length > 800,
+            aiReply: reply?.slice(0, 8000) ?? null,
+            aiReplyTruncated: !!reply && reply.length > 8000,
           }
         : {}),
     });
-    if (Buffer.byteLength(JSON.stringify(payload) + system) > 6200)
+    if (countTokens(JSON.stringify(payload) + system) > inputLimit - 2048)
       payload.history.pop();
-    if (payload.history.length >= 10) break;
+    if (payload.history.length >= 30) break;
   }
   payload.history.sort(
     (a, b) =>
@@ -163,10 +166,17 @@ export function buildContext(
   );
   return JSON.stringify(payload);
 }
-class BudgetError extends Error {}
+
 export class AiQueue {
   private lastUsage: { input: number; output: number } | undefined;
   private busy = false;
+  private owner = "";
+  private active: {
+    id: string;
+    kind: "note" | "task";
+    controller: AbortController;
+  } | null = null;
+  private requests: AiRequests;
   private stopping = false;
   private activeResearch: { id: string; controller: AbortController } | null =
     null;
@@ -178,23 +188,36 @@ export class AiQueue {
     private transport: AiTransport = new DeepSeek(),
     private searchTransport: ResearchSearch = new DeepSeekSearch(),
     private pageReader: typeof readPublicPage = readPublicPage,
-  ) {}
+    private progress: (id: string, text: string) => void = () => {},
+  ) {
+    this.requests = new AiRequests(store, config, transport, (stage) => {
+      this.status = stage;
+      if (this.owner) this.store.setMeta("ai-progress:" + this.owner, stage);
+      this.changed();
+    });
+  }
   stop() {
     this.stopping = true;
     this.activeResearch?.controller.abort();
+    this.active?.controller.abort();
   }
   private budget(instructions: string, context: string, output: number) {
-    if (Buffer.byteLength(system + instructions + context) + 256 > 8000)
-      throw new Error("本次上下文超过 8,000 tokens 预算，未调用 AI");
-    const usage = this.store.dailyUsage(day()),
-      settings = this.config.settings();
-    if (
-      usage.input + 8000 > settings.dailyInputLimit ||
-      usage.output + output > settings.dailyOutputLimit
-    )
-      throw new BudgetError(
-        "今日 AI 用量预算已到上限。原文已保存；历史整理明日继续。",
-      );
+    this.requests.budget(system + instructions, context, output);
+  }
+  allowManualRetry(id: string) {
+    this.requests.allowManualRetry(id);
+  }
+  cancel(id: string, kind: "note" | "task") {
+    if (kind === "note") this.store.append("note.cancelled", { id });
+    else
+      this.store.append("task.updated", {
+        id,
+        status: "cancelled",
+        error: "已取消；已发送的请求仍可能计费。",
+      });
+    if (this.active?.id === id) this.active.controller.abort();
+    if (this.activeResearch?.id === id) this.activeResearch.controller.abort();
+    this.changed();
   }
   private async request(
     instructions: string,
@@ -203,55 +226,27 @@ export class AiQueue {
     output: number,
     signal?: AbortSignal,
     onCompletion?: (result: import("./ai").Completion) => void,
+    validate?: (value: unknown) => unknown,
+    text = false,
   ) {
-    this.budget(instructions, context, output);
-    const key = this.config.apiKey();
-    if (!key) throw new Error("请先配置 DeepSeek API key");
-    const id = randomUUID();
-    this.store.append("usage.reserved", {
-      id,
-      input: 8000,
+    const result = await this.requests.run(
+      this.owner,
+      system.replace(text ? "只返回严格 JSON。" : "___", "") + instructions,
+      context,
+      model,
       output,
-      model,
-      createdAt: new Date().toISOString(),
-    });
-    let r;
-    try {
-      r = await this.transport.complete(
-        key,
-        model,
-        system + instructions,
-        context,
-        output,
-        signal,
-      );
-    } catch (e) {
-      if ((e as { notBilled?: boolean }).notBilled)
-        this.store.append("usage.released", { id });
-      throw e;
-    }
-    this.lastUsage = { input: r.input, output: r.output };
-    this.store.append("usage.recorded", {
-      id,
-      input: r.input,
-      output: r.output,
-      model,
-      createdAt: new Date().toISOString(),
-    });
-    onCompletion?.(r);
-    if (r.finishReason === "length")
-      throw new Error(
-        "AI 输出达到本次长度上限，结果被截断，未保存派生内容。可手动重试。",
-      );
-    if (!r.content.trim())
-      throw new Error("AI 返回了空内容，原文已保存，可手动重试。");
-    const content = r.content
-      .trim()
-      .replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, "$1");
-    return this.store.display(JSON.parse(content)) as unknown;
+      signal ?? this.active?.controller.signal,
+      { text, onDelta: (chunk) => this.progress(this.owner, chunk) },
+      validate,
+      onCompletion,
+    );
+    (signal ?? this.active?.controller.signal)?.throwIfAborted();
+    this.lastUsage = result.usage;
+    return result.value;
   }
   async pump() {
     if (this.busy || this.stopping) return;
+    if (!this.config.settings().hardBudget) this.store.resumeSoftBudget();
     try {
       if (!this.config.apiKey()) {
         this.status = "配置 API key 后自动处理";
@@ -290,6 +285,7 @@ export class AiQueue {
             this.store.append("note.failed", {
               id: n.id,
               error: safeAiError(e),
+              inputRevision: n.revision ?? 0,
             });
           }
           continue;
@@ -301,7 +297,10 @@ export class AiQueue {
           const fit: Note[] = [];
           for (const n of candidates) {
             fit.push(n);
-            if (Buffer.byteLength(this.organizeContext(fit)) > 6000) {
+            if (
+              countTokens(this.organizeContext(fit)) >
+              this.config.settings().contextTokens - 2000
+            ) {
               fit.pop();
               break;
             }
@@ -323,22 +322,33 @@ export class AiQueue {
       this.status =
         this.store.getMeta("noteBudgetDay") === day()
           ? "原文已保存；今日 AI 预算不足，明日自动继续"
-          : "原文已保存；失败任务可手动重试";
+          : this.store
+                .aiTasks()
+                .some((t) => ["failed", "partial"].includes(t.status))
+            ? "原文已保存；部分 AI 任务需检查或重试"
+            : "AI 任务已完成";
       this.changed();
     }
   }
   private async process(n: Note) {
+    this.owner = n.id;
+    this.active = { id: n.id, kind: "note", controller: new AbortController() };
     const raw = n.currentRaw ?? n.raw;
-    const instructions = `返回一个 JSON 对象，格式示例：{"threadId":null,"newThreadTitle":null,"newParentId":null,"threadDescription":"","title":"笔记标题","synopsis":"","reply":"简短回应"}。threadId 为已有活动线程完整 UUID 或 null；newThreadTitle 为新问题建议标题或 null；newParentId 为主问题完整 UUID 或 null。其他字段必须是字符串，不是列表或对象。threadDescription 无补充则用空字符串，title 建议不超过18字、硬上限24字符，synopsis ${isShortNote(raw) ? "必须为空字符串" : "忠实概述原意，建议不超过60字、硬上限80字符"}，reply ${n.mode === "discussion" ? "直接回答，最多2000字" : "简短追问或不同视角，建议不超过100字、硬上限150字符"}。已指定线程时沿用；否则优先已有宽泛问题，不确定则给建议，不直接创建线程。结构建议敏感度：${this.config.settings().structureSensitivity}；保守时优先聚合，只在依据充分时建议细分。`;
-    let context = buildContext(
-      this.store,
-      raw,
-      n.threadId,
-      n.id,
-      n.parentNoteId
-        ? { noteId: n.parentNoteId, revision: n.parentRevision ?? 0 }
-        : null,
-    );
+    const instructions = `返回一个 JSON 对象，格式示例：{"threadId":null,"newThreadTitle":null,"newParentId":null,"threadDescription":"","title":"笔记标题","synopsis":"","reply":"简短回应"}。threadId 为已有活动线程完整 UUID 或 null；newThreadTitle 为新问题建议标题或 null；newParentId 为主问题完整 UUID 或 null。其他字段必须是字符串，不是列表或对象。threadDescription 无补充则用空字符串，title 建议不超过18字、建议24字符以内，稍长也完整保存，synopsis ${isShortNote(raw) ? "必须为空字符串" : "忠实概述原意，建议不超过60字、建议80字符以内"}，reply ${n.mode === "discussion" ? "直接回答，按需完整回答" : "简短追问或不同视角，建议不超过100字、目标150字符以内"}。已指定线程时沿用；否则优先已有宽泛问题，不确定则给建议，不直接创建线程。结构建议敏感度：${this.config.settings().structureSensitivity}；保守时优先聚合，只在依据充分时建议细分。`;
+    let context =
+      n.processing?.revision === (n.revision ?? 0)
+        ? n.processing.input
+        : buildContext(
+            this.store,
+            raw,
+            n.threadId,
+            n.id,
+            n.parentNoteId
+              ? { noteId: n.parentNoteId, revision: n.parentRevision ?? 0 }
+              : null,
+            false,
+            this.config.settings().contextTokens,
+          );
     if (n.researchId) {
       const research = this.store.research(n.researchId),
         parsed = JSON.parse(context);
@@ -369,24 +379,69 @@ export class AiQueue {
       })),
       inputRevision: n.revision ?? 0,
     });
-    const result = parseNoteResult(
-      await this.request(
-        instructions +
-          (n.mode === "discussion"
-            ? "针对 origin 起始笔记的这次回复继续对话；history 中 raw 是用户原话，aiReply 是之前 AI 的回答。不要跳到其他笔记，不重复另起话题，不给讨论另建线程。AI 的建议不能视为用户认同。"
-            : ""),
+    let result: import("../src/shared").AiNoteResult,
+      errors: Record<string, string> = {};
+    if (n.mode === "discussion") {
+      const reply = await this.request(
+        "针对 origin 起始笔记继续对话；history 中 raw 是用户原话，aiReply 是之前 AI 回答。直接用自然语言回答，不输出 JSON，不给讨论另建线程。AI 建议不等于用户认同。",
         context,
         n.model,
-        n.mode === "note" ? 800 : 2200,
-      ),
-      n,
-    );
-    if (!isShortNote(raw) && n.mode === "note" && !result.synopsis.trim())
-      throw new Error("长笔记缺少 AI 摘要，原文已保留，请手动重试");
+        8192,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      result = {
+        title: n.title,
+        synopsis: "",
+        reply,
+        threadId: n.threadId,
+        newThreadTitle: null,
+        newParentId: null,
+        threadDescription: "",
+      };
+    } else {
+      const value = await this.request(
+        instructions,
+        context,
+        n.model,
+        2048,
+        undefined,
+        undefined,
+        (value) => {
+          const parts = parseNoteParts(value, n);
+          if (Object.keys(parts.errors).length)
+            throw new PartialResultError(
+              Object.values(parts.errors).join("；"),
+              value,
+            );
+          return value;
+        },
+      );
+      ({ result, errors } = parseNoteParts(value, n));
+      if (n.componentErrors) {
+        for (const field of ["title", "synopsis", "reply"] as const)
+          if (!n.componentErrors[field]) {
+            result[field] = field === "reply" ? (n.reply ?? "") : n[field];
+            delete errors[field];
+          }
+      }
+    }
     const active = this.store.threads().filter((t) => !t.archived);
-    if (result.threadId && !active.some((t) => t.id === result.threadId))
-      throw new Error("AI 返回了不存在的线程，未采用分类");
+    if (result.threadId && !active.some((t) => t.id === result.threadId)) {
+      result.threadId = null;
+      errors.threadId = "分类引用不存在，笔记保留待整理";
+    }
+    if (
+      result.newParentId &&
+      !active.some((t) => t.id === result.newParentId && !t.parentId)
+    ) {
+      result.newParentId = null;
+      errors.newParentId = "上级问题引用无效";
+    }
     const live = this.store.note(n.id);
+    if (live.deletedAt || live.status === "cancelled") return;
     const threadId = n.parentNoteId
       ? this.store.note(n.parentNoteId).threadId
       : live.assignmentLocked
@@ -399,6 +454,7 @@ export class AiQueue {
         threadId,
         inputRevision: n.revision ?? 0,
         usage: this.lastUsage,
+        componentErrors: errors,
       }),
     ];
     if (
@@ -439,8 +495,8 @@ export class AiQueue {
       notes: notes.map((n) => ({
         id: n.id,
         revision: n.revision ?? 0,
-        raw: (n.currentRaw ?? n.raw).slice(0, 800),
-        truncated: (n.currentRaw ?? n.raw).length > 800,
+        raw: (n.currentRaw ?? n.raw).slice(0, 20000),
+        truncated: (n.currentRaw ?? n.raw).length > 20000,
       })),
       previous: this.store
         .all<{ fingerprint: string; status: string; title: string }>(
@@ -451,6 +507,12 @@ export class AiQueue {
     });
   }
   private async runTask(task: AiTask) {
+    this.owner = task.id;
+    this.active = {
+      id: task.id,
+      kind: "task",
+      controller: new AbortController(),
+    };
     this.status =
       task.kind === "research"
         ? "正在查找外部资料"
@@ -475,6 +537,7 @@ export class AiQueue {
               null,
               null,
               true,
+              this.config.settings().contextTokens,
             );
       const bases = {
         threads: Object.fromEntries(
@@ -498,7 +561,7 @@ export class AiQueue {
               noteId: n.id,
               revision: n.revision,
             }));
-      this.budget("", context, 1500);
+      this.budget("", context, 16384);
       this.store.append("task.updated", {
         id: task.id,
         status: "running",
@@ -509,19 +572,42 @@ export class AiQueue {
       if (task.kind === "organize") {
         const instructions =
           '返回 JSON 对象，示例：{"suggestions":[{"kind":"create","title":"问题标题","description":"","parentId":null,"targetId":null,"sourceIds":[],"noteIds":["输入 notes 的完整 id"],"reason":"根据原文的简短理由","evidence":[{"noteId":"同一输入笔记的完整 id","revision":0}]}]}。kind 只能为 create/assign/merge/reparent。文本字段必须是字符串；sourceIds、noteIds、evidence 必须为数组；无上级或目标用 null。id 和 revision 必须采用输入真实值，不照抄示例。现有问题适合时建议 assign；同题碎片建议 merge 并指定 targetId；其他情况谨慎 create/reparent。只处理输入 notes，引用其原文。相同依据的已拒绝或暂缓建议不重复。不需要调整时返回 {"suggestions":[]}。不能直接更改归属。';
-        const result = z
-          .object({ suggestions: z.array(structureInputSchema).max(20) })
+        const candidate = z
+          .object({ suggestions: z.array(z.unknown()).max(100) })
           .parse(
-            await this.request(instructions, context, "deepseek-flash", 1500),
+            await this.request(
+              instructions,
+              context,
+              "deepseek-flash",
+              16384,
+              undefined,
+              undefined,
+              (value) =>
+                z
+                  .object({ suggestions: z.array(z.unknown()).max(100) })
+                  .parse(value),
+            ),
           );
+        const warnings: string[] = [];
+        const result = {
+          suggestions: candidate.suggestions.flatMap((value) => {
+            const parsed = structureInputSchema.safeParse(value);
+            if (parsed.success) return [parsed.data];
+            warnings.push("一个整理建议字段无效，未采用");
+            return [];
+          }),
+        };
         const allowed = new Map(refs.map((r) => [r.noteId, r.revision]));
-        for (const s of result.suggestions) {
+        result.suggestions = result.suggestions.filter((s) => {
           if (
             s.noteIds.some((id) => !allowed.has(id)) ||
             s.evidence.some((e) => allowed.get(e.noteId) !== e.revision)
-          )
-            throw new Error("整理建议引用了本批之外的原文");
-        }
+          ) {
+            warnings.push("一个整理建议引用超出本批，未采用");
+            return false;
+          }
+          return true;
+        });
         // A task result and every recommendation commit together, so interrupted replay cannot repeat a billed request.
         this.store.checkBases(bases);
         for (const r of refs)
@@ -555,14 +641,22 @@ export class AiQueue {
           );
         }
         const events = [...grouped.values()]
-          .map((s) => this.store.prepareStructure(s))
+          .map((s) => {
+            try {
+              return this.store.prepareStructure(s);
+            } catch {
+              warnings.push("一个建议的线程结构或版本无效，未采用");
+              return null;
+            }
+          })
           .filter((e) => e !== null);
         this.store.appendMany([
           ...events,
           this.store.event("task.updated", {
             id: task.id,
-            status: "done",
-            result,
+            status: warnings.length ? "partial" : "done",
+            error: warnings.length ? warnings.join("；") : null,
+            result: { ...result, warnings },
           }),
         ]);
       } else if (task.kind === "cognition") {
@@ -571,10 +665,10 @@ export class AiQueue {
         const result = z
           .object({
             after: stateContentSchema,
-            reason: z.string().max(2000),
+            reason: z.string().max(200000),
             evidenceIds: z.array(z.string().uuid()).min(1).max(20),
           })
-          .parse(await this.request(instructions, context, task.model, 1500));
+          .parse(await this.request(instructions, context, task.model, 16384));
         if (result.evidenceIds.some((id) => !refs.some((r) => r.noteId === id)))
           throw new Error("AI 引用了上下文之外的历史");
         const current = parsed.current;
@@ -607,7 +701,15 @@ export class AiQueue {
         ]);
       } else {
         const result = parseRecapResult(
-          await this.request(recapInstructions, context, task.model, 1500),
+          await this.request(
+            recapInstructions,
+            context,
+            task.model,
+            16384,
+            undefined,
+            undefined,
+            (value) => parseRecapResult(value, refs),
+          ),
           refs,
         );
         const times = parsed.history.map((n: any) => n.createdAt).sort();
@@ -737,7 +839,7 @@ export class AiQueue {
           const id = randomUUID();
           this.store.append("usage.reserved", {
             id,
-            input: 8000,
+            input: countTokens(query) + 256,
             output: 1800,
             model: "deepseek-v4-flash-search",
             createdAt: new Date().toISOString(),
@@ -769,13 +871,13 @@ export class AiQueue {
             instructions,
             context,
             "deepseek-flash",
-            2200,
+            16384,
             controller.signal,
             (result) =>
               this.store.append("task.updated", {
                 id: task.id,
                 candidate: {
-                  content: result.content.slice(0, 24000),
+                  content: result.content,
                   finishReason: result.finishReason ?? null,
                 },
                 status: "running",

@@ -84,9 +84,11 @@ export function AnalysisControls({
                 ? "今日预算不足，明日自动继续"
                 : task?.status === "failed"
                   ? "生成失败"
-                  : task?.status === "done"
-                    ? "生成完成，结果已保存"
-                    : null;
+                  : task?.status === "partial"
+                    ? "部分完成，有些内容需要重试"
+                    : task?.status === "done"
+                      ? "生成完成，结果已保存"
+                      : null;
         return (
           <section className="analysis-task" key={kind}>
             <button
@@ -113,23 +115,24 @@ export function AnalysisControls({
                     {kind === "recap" ? "查看回顾" : "查看认知建议"}
                   </button>
                 )}
-                {task && ["failed", "budget"].includes(task.status) && (
-                  <button
-                    disabled={!hasApiKey || busy}
-                    onClick={() => {
-                      setSubmitting(kind);
-                      onAction(async () => {
-                        try {
-                          await window.uki.retryTask(task.id);
-                        } finally {
-                          setSubmitting(null);
-                        }
-                      });
-                    }}
-                  >
-                    手动重试
-                  </button>
-                )}
+                {task &&
+                  ["failed", "budget", "partial"].includes(task.status) && (
+                    <button
+                      disabled={!hasApiKey || busy}
+                      onClick={() => {
+                        setSubmitting(kind);
+                        onAction(async () => {
+                          try {
+                            await window.uki.retryTask(task.id);
+                          } finally {
+                            setSubmitting(null);
+                          }
+                        });
+                      }}
+                    >
+                      手动重试
+                    </button>
+                  )}
               </div>
             )}
           </section>

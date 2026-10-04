@@ -148,13 +148,13 @@ it("preserves unfinished inbox receipts and daily budget accounting during reent
   observeInbox(s, "手机正文\n\n新增正文", '"two"');
   expect(s.snapshot().notes).toHaveLength(5);
 });
-it("publishes format 4 and restores reentered data without another AI request or duplicate notes", async () => {
+it("publishes format 5 and restores reentered data without another AI request or duplicate notes", async () => {
   const s = open(),
     dav = new FakeDav();
   fixture(s);
   s.reimportRawNotes();
   await new SyncEngine(s, dav).backup();
-  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(4);
+  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
   const restored = open();
   await new SyncEngine(restored, dav).restore();
   expect(restored.snapshot()).toEqual(s.snapshot());
@@ -179,7 +179,7 @@ it("prioritizes fresh input and retains raw imports as pending until the next bu
   expect(s.nextNote()?.id).toBe(fresh);
   s.append("usage.recorded", {
     id: crypto.randomUUID(),
-    input: 1,
+    input: 8000,
     output: 0,
     model: "deepseek-flash",
     createdAt: new Date().toISOString(),
@@ -187,7 +187,7 @@ it("prioritizes fresh input and retains raw imports as pending until the next bu
   let calls = 0;
   const config = {
     apiKey: () => "test-only",
-    settings: () => settingsSchema.parse({ dailyInputLimit: 8000 }),
+    settings: () => settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000 }),
   };
   const ai = new AiQueue(s, config, () => {}, {
     complete: async () => {

@@ -102,7 +102,12 @@ export function NoteReply({
               .catch((e) => setError(e.message));
           }}
           onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            if (
+              (e.ctrlKey || e.metaKey) &&
+              e.key === "Enter" &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault();
               e.currentTarget.form?.requestSubmit();
             }

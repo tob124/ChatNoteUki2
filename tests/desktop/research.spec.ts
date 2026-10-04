@@ -88,7 +88,7 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
             runtime.researchPending.push(resolve),
           );
         }
-        const context = JSON.parse(body.messages[1].content);
+        const context = JSON.parse(body.input[0].content);
         if (context.externalResearch) runtime.discussionContexts.push(context);
         const content = context.sources
           ? {
@@ -113,7 +113,7 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
             };
         return new Response(
           JSON.stringify({
-            choices: [{ message: { content: JSON.stringify(content) } }],
+            choices: [{ message: { content: body.stream ? content.reply : JSON.stringify(content) } }],
             usage: { prompt_tokens: 40, completion_tokens: 30 },
           }),
         );
@@ -276,7 +276,7 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
     await app.close();
     app = await launch();
     page = await app.firstWindow();
-    await page.getByRole("button", { name: "外部资料", exact: true }).click();
+    await page.getByRole("navigation").getByRole("button", { name: "资料", exact: true }).click();
     await expect(page.locator(".research-card")).toHaveCount(1);
     await expect(page.getByLabel("资料后的我的判断")).toHaveValue(
       "还没有发出的资料判断草稿。",

@@ -72,7 +72,7 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
         .getByRole("button", { name: "最大化资料", exact: true })
         .count()) === 0
     )
-      await page.getByRole("button", { name: "资料", exact: true }).click();
+      await page.getByRole("button", { name: "概览", exact: true }).click();
     await page.getByRole("button", { name: "最大化资料", exact: true }).click();
     await expect(page.locator(".reading-layer")).toBeVisible();
     await page.keyboard.press("Escape");
@@ -90,6 +90,7 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
     await page.getByRole("button", { name: "查看最新", exact: true }).click();
     await page.locator(".record-open").last().click();
     await expect(page.locator(".original").last()).toContainText("后台新内容");
+    await page.locator(".record .action-menu summary").last().click();
     await page.getByRole("button", { name: "更正正文", exact: true }).click();
     await page
       .getByLabel("更正正文", { exact: true })
@@ -123,7 +124,7 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
         .locator(".main-pane")
         .evaluate((el) => el.getBoundingClientRect().width),
     ).toBeGreaterThanOrEqual(480);
-    await page.getByRole("button", { name: "资料", exact: true }).click();
+    await page.getByRole("button", { name: "概览", exact: true }).click();
     await expect(
       page.getByRole("complementary", { name: "备查资料" }),
     ).toBeVisible();

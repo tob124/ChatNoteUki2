@@ -9,9 +9,9 @@ const section = (limit: number) =>
     .transform((value) => (Array.isArray(value) ? value.join("\n") : value))
     .pipe(z.string().max(limit));
 const recapSchema = z.object({
-  expressed: section(3000).refine((s) => !!s.trim(), "empty section"),
-  possible: section(3000),
-  questions: section(2000),
+  expressed: section(200000).refine((s) => !!s.trim(), "empty section"),
+  possible: section(200000).default(""),
+  questions: section(200000).default(""),
   evidenceIds: z.array(z.string().min(8).max(36)).min(1).max(30),
 });
 export function parseRecapResult(input: unknown, refs: Evidence[]) {

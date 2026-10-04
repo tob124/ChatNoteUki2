@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { InboxBatch, InboxItem } from "../src/shared";
 import { Store } from "./store";
+import { digest, itemDigest } from "./redaction";
 
 export function splitInbox(raw: string): string[] {
   // Keep each original slice; normalize line endings only in the separator expression.
@@ -26,15 +27,20 @@ export function observeInbox(
   if (!parsed.length) return null;
   const batches = store.all<InboxBatch>("batches");
   const pending = batches.filter((b) => b.status === "pending").at(-1);
-  if (pending?.snapshot === raw) return pending;
+  if (
+    pending &&
+    (pending.snapshot === raw || pending.snapshotHash === digest(raw))
+  )
+    return pending;
   let existing: InboxItem[] = [];
   if (pending) {
-    const old = splitInbox(pending.snapshot);
+    const old =
+      pending.itemHashes ?? splitInbox(pending.snapshot).map(itemDigest);
     // A trailing single newline may become the separator for an appended note.
     const comparable = (s: string) => s.replace(/(?:\r\n|\r|\n)+$/, "");
     if (
       parsed.length < old.length ||
-      !old.every((s, i) => comparable(s) === comparable(parsed[i]))
+      !old.every((hash, i) => hash === itemDigest(comparable(parsed[i])))
     ) {
       if (!batches.some((b) => b.status === "conflict" && b.snapshot === raw))
         store.append("inbox.conflict", {
@@ -72,5 +78,5 @@ export function observeInbox(
     );
   events.push(store.event("inbox.observed", batch));
   store.appendMany(events);
-  return batch;
+  return store.importDetail(batch.id);
 }

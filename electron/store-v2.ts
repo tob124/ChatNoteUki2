@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { humanizeGenerated, humanizeText } from "./presentation";
+import { redactEvent, redactBatch } from "./redaction";
 import {
   researchInputSchema,
   researchCheckpointSchema,
@@ -48,20 +49,28 @@ const threadSchema = z.object({
   description: z.string().max(500).optional(),
   archived: z.boolean().optional(),
   revision: natural.optional(),
+  pinned: z.boolean().optional(),
 });
 const noteSchema = z.object({
   researchId: uuid.optional(),
   id: uuid,
   raw: z.string().min(1).max(50000),
-  title: z.string().max(200),
-  synopsis: z.string().max(80),
+  title: z.string().max(64000),
+  synopsis: z.string().max(64000),
   reply: z.string().nullable(),
   threadId: uuid.nullable(),
   createdAt: z.string().datetime(),
   source: z.enum(["desktop", "inbox"]),
   mode: z.enum(["note", "discussion"]),
   model: z.enum(["deepseek-flash", "deepseek-v4-pro"]),
-  status: z.enum(["pending", "running", "done", "failed"]),
+  status: z.enum([
+    "pending",
+    "running",
+    "done",
+    "failed",
+    "partial",
+    "cancelled",
+  ]),
   error: z.string().nullable(),
   revision: natural.optional(),
   assignmentRevision: natural.optional(),
@@ -72,6 +81,9 @@ const noteSchema = z.object({
   reentered: z.boolean().optional(),
 });
 const batchSchema = z.object({
+  snapshotHash: z.string().length(64).optional(),
+  itemHashes: z.array(z.string().length(64)).max(10000).optional(),
+  redacted: z.boolean().optional(),
   id: uuid,
   snapshot: z.string().max(4000000),
   etag: z.string().max(500).nullable(),
@@ -82,6 +94,7 @@ const batchSchema = z.object({
   createdAt: z.string().datetime(),
 });
 const usageSchema = z.object({
+  estimated: z.boolean().optional(),
   searches: natural.optional(),
   id: uuid,
   input: natural,
@@ -102,7 +115,7 @@ export const structureInputSchema = z.object({
   targetId: uuid.nullable().default(null),
   sourceIds: z.array(uuid).max(40).default([]),
   noteIds: z.array(uuid).max(10000).default([]),
-  reason: z.string().min(1).max(2000),
+  reason: z.string().min(1).max(200000),
   evidence: z.array(evidenceSchema).max(30),
 });
 const taskSchema = z.object({
@@ -117,21 +130,63 @@ const taskSchema = z.object({
   error: z.string().nullable(),
 });
 const schemas = {
+  "ai.attempt": z.object({
+    id: uuid,
+    owner: uuid,
+    fingerprint: z.string().length(64),
+    model: z.string().max(100),
+    phase: z.enum(["started", "completed", "rejected"]),
+    content: z.string().max(1000000).optional(),
+    input: natural,
+    output: natural,
+    usageKnown: z.boolean().optional(),
+    finishReason: z.string().nullable().optional(),
+    error: z.string().max(1000).optional(),
+    createdAt: z.string().datetime(),
+  }),
+  "note.trashed": z.object({ id: uuid }),
+  "note.restored": z.object({ id: uuid }),
+  "note.purged": z.object({ id: uuid }),
+  "note.bookmarked": z.object({ id: uuid, value: z.boolean() }),
+  "note.cancelled": z.object({ id: uuid }),
+  "thread.pinned": z.object({ id: uuid, value: z.boolean() }),
+  "cognition.edited": z.object({
+    threadId: uuid,
+    baseVersion: natural,
+    content: stateContentSchema,
+  }),
+  "notes.move-batch": z.object({
+    id: uuid,
+    ids: z.array(uuid).min(1).max(10000),
+    threadId: uuid.nullable(),
+    bases: z.record(uuid, natural),
+  }),
+  "notes.undo-move": z.object({ id: uuid }),
+  "material.updated": z.object({
+    id: uuid,
+    value: z.record(z.string(), z.unknown()),
+  }),
   "note.added": noteSchema,
   "note.started": z.object({
     id: uuid,
-    input: z.string().max(32000).optional(),
+    input: z.string().max(1000000).optional(),
     inputVersions: z.array(evidenceSchema).max(30).optional(),
     inputRevision: natural.optional(),
+    componentErrors: z.record(z.string(), z.string().max(1000)).optional(),
   }),
   "note.completed": z.object({
     id: uuid,
     result: aiNoteSchema,
     threadId: uuid.nullable(),
     inputRevision: natural.optional(),
+    componentErrors: z.record(z.string(), z.string().max(1000)).optional(),
     usage: z.object({ input: natural, output: natural }).optional(),
   }),
-  "note.failed": z.object({ id: uuid, error: z.string().max(1000) }),
+  "note.failed": z.object({
+    id: uuid,
+    error: z.string().max(1000),
+    inputRevision: natural.optional(),
+  }),
   "note.deferred": z.object({
     id: uuid,
     day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -154,7 +209,7 @@ const schemas = {
     baseVersion: natural,
     before: stateContentSchema,
     after: stateContentSchema,
-    reason: z.string().max(2000),
+    reason: z.string().max(200000),
     evidenceIds: z.array(uuid).max(20),
     evidence: z.array(evidenceSchema).max(20).optional(),
     status: z.literal("pending"),
@@ -204,17 +259,18 @@ const schemas = {
       "failed",
       "budget",
       "cancelled",
+      "partial",
     ]),
     checkpoint: researchCheckpointSchema.optional(),
     candidate: z
       .object({
-        content: z.string().max(24000),
+        content: z.string().max(1000000),
         finishReason: z.string().nullable(),
       })
       .nullable()
       .optional(),
     error: z.string().max(1000).nullable().optional(),
-    input: z.string().max(32000).optional(),
+    input: z.string().max(1000000).optional(),
     inputVersions: z.array(evidenceSchema).max(30).optional(),
     budgetDay: z.string().optional(),
     result: z.unknown().optional(),
@@ -230,9 +286,9 @@ const schemas = {
     sampled: natural,
     baseVersion: natural,
     evidence: z.array(evidenceSchema).max(30),
-    expressed: z.string().max(3000),
-    possible: z.string().max(3000),
-    questions: z.string().max(2000),
+    expressed: z.string().max(200000),
+    possible: z.string().max(200000),
+    questions: z.string().max(200000),
   }),
 };
 export function validateEvent(input: unknown): ThoughtEvent {
@@ -252,7 +308,10 @@ type Kind =
   | "recaps"
   | "researches"
   | "revisions"
-  | "cognitionHistory";
+  | "cognitionHistory"
+  | "attempts"
+  | "materials"
+  | "moves";
 
 /** Canonical append-only events plus disposable, transactionally updated SQL projections. */
 export class Store {
@@ -262,12 +321,14 @@ export class Store {
   constructor(path: string) {
     this.path = path;
     this.db = new DatabaseSync(path);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+    this.db
+      .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
    CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,body TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS events_note_completion ON events(json_extract(body,'$.payload.id'),json_extract(body,'$.type'),seq);
    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS entities_v2(kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,seq INTEGER NOT NULL,createdAt TEXT NOT NULL,PRIMARY KEY(kind,id));
    CREATE INDEX IF NOT EXISTS entities_v2_seq ON entities_v2(kind,seq);
+   CREATE INDEX IF NOT EXISTS entities_v2_purged ON entities_v2(json_extract(body,'$.purged'),id) WHERE kind='notes';
    CREATE TABLE IF NOT EXISTS note_query_v2(id TEXT PRIMARY KEY,seq INTEGER NOT NULL,threadId TEXT,parentNoteId TEXT,createdAt TEXT NOT NULL,status TEXT NOT NULL,legacy INTEGER NOT NULL,raw TEXT NOT NULL,title TEXT NOT NULL,synopsis TEXT NOT NULL,reply TEXT NOT NULL,summary TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS note_query_v2_thread ON note_query_v2(threadId,seq);
    CREATE INDEX IF NOT EXISTS note_query_v2_parent ON note_query_v2(parentNoteId,seq);
@@ -295,7 +356,7 @@ export class Store {
         "ALTER TABLE note_query_v2 ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
       );
     if (
-      this.getMeta("projectionVersion") !== "2.6" ||
+      this.getMeta("projectionVersion") !== "2.7" ||
       Number(this.getMeta("projectedSeq") ?? -1) !== this.latestSeq() ||
       Number(this.getMeta("projectionNoteCount") ?? 0) !==
         Number(
@@ -367,6 +428,71 @@ export class Store {
     const r = this.db.prepare("SELECT value FROM meta WHERE key=?").get(key);
     return r ? String(r.value) : null;
   }
+  metaKeys(prefix: string): string[] {
+    return this.db
+      .prepare("SELECT key FROM meta WHERE substr(key,1,?)=?")
+      .all(prefix.length, prefix)
+      .map((r) => String(r.key));
+  }
+  hasUsage(id: string) {
+    return !!this.get("usage", id);
+  }
+  resumeSoftBudget() {
+    this.setMeta("noteBudgetDay", "");
+    const tasks = this.db
+      .prepare(
+        "SELECT id FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.status')='budget'",
+      )
+      .all();
+    this.appendMany(
+      tasks.map((t) =>
+        this.event("task.updated", {
+          id: String(t.id),
+          status: "pending",
+          error: null,
+        }),
+      ),
+    );
+  }
+  aiTasks() {
+    const notes = this.db
+      .prepare(
+        "SELECT id,title,status FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL AND status!='done' ORDER BY seq DESC LIMIT 50",
+      )
+      .all()
+      .map((r) => {
+        const n = this.note(String(r.id));
+        return {
+          id: n.id,
+          kind: "note" as const,
+          title: n.title,
+          status: n.status,
+          stage: this.getMeta("ai-progress:" + n.id) ?? "等待处理",
+          error: n.error,
+        };
+      });
+    return [
+      ...notes,
+      ...this.latest<AiTask>("tasks", 50)
+        .reverse()
+        .map((t) => ({
+          id: t.id,
+          kind: "task" as const,
+          title:
+            {
+              organize: "整理",
+              recap: "线程回顾",
+              cognition: "认知分析",
+              research: "资料分析",
+            }[t.kind] +
+            " · " +
+            (t.threadId ? this.requireThread(t.threadId).title : "待整理"),
+          status: t.status,
+          stage: this.getMeta("ai-progress:" + t.id) ?? t.status,
+          error: t.error,
+        })),
+    ];
+  }
   setMeta(key: string, value: string) {
     this.db
       .prepare(
@@ -437,9 +563,7 @@ export class Store {
       .run(kind, id, JSON.stringify(value), seq, value.createdAt ?? "");
     if (kind !== "notes") return;
     const n = value as Note,
-      raw =
-        n.raw +
-        (n.currentRaw && n.currentRaw !== n.raw ? "\n" + n.currentRaw : "");
+      raw = n.currentRaw ?? n.raw;
     const summary = {
       ...n,
       raw: [...(n.currentRaw ?? n.raw)]
@@ -509,11 +633,157 @@ export class Store {
     const p = e.payload as any,
       save = (n: Note) => this.put("notes", n.id, n, seq);
     switch (e.type) {
+      case "ai.attempt":
+        this.put(
+          "attempts",
+          p.id,
+          { ...this.get("attempts", p.id), ...p },
+          seq,
+        );
+        break;
+      case "material.updated":
+        this.put("materials", p.id, p.value, seq);
+        break;
+      case "thread.pinned":
+        this.put(
+          "threads",
+          p.id,
+          { ...this.requireThread(p.id), pinned: p.value },
+          seq,
+        );
+        break;
+      case "cognition.edited": {
+        this.requireThread(p.threadId, true);
+        if (this.cognition(p.threadId).version !== p.baseVersion)
+          throw new Error("当前认知已变化，请核对后再保存");
+        const c = {
+          ...p.content,
+          threadId: p.threadId,
+          version: p.baseVersion + 1,
+        };
+        this.put("cognitions", p.threadId, c, seq);
+        this.put("cognitionHistory", p.threadId + ":" + c.version, c, seq);
+        break;
+      }
+      case "note.bookmarked": {
+        const n = this.note(p.id);
+        if (n.purged) throw new Error("笔记已彻底删除");
+        save({ ...n, bookmarked: p.value });
+        break;
+      }
+      case "note.trashed":
+      case "note.restored":
+      case "note.purged": {
+        const root = this.note(p.id);
+        if (root.parentNoteId) throw new Error("请通过起始笔记管理整段对话");
+        if (root.purged) throw new Error("笔记已彻底删除，不能恢复");
+        if (e.type === "note.purged" && !root.deletedAt)
+          throw new Error("请先将笔记移入回收站");
+        for (const id of this.withDiscussions([p.id])) {
+          const n = this.note(id);
+          n.deletedAt = e.type === "note.restored" ? null : e.createdAt;
+          if (n.status === "pending" || n.status === "running")
+            n.status = "cancelled";
+          if (e.type === "note.purged") {
+            n.raw = "笔记已删除";
+            delete n.currentRaw;
+            delete n.processing;
+            n.title = "笔记已删除";
+            n.synopsis = "";
+            n.reply = null;
+            n.purged = true;
+            this.db
+              .prepare(
+                "DELETE FROM entities_v2 WHERE kind='revisions' AND json_extract(body,'$.noteId')=?",
+              )
+              .run(id);
+          }
+          save(n);
+        }
+        for (const t of this.all<AiTask>("tasks"))
+          if (
+            ["pending", "running", "budget"].includes(t.status) &&
+            (t.noteIds.includes(p.id) ||
+              t.inputVersions?.some((r) => r.noteId === p.id))
+          )
+            this.put(
+              "tasks",
+              t.id,
+              {
+                ...t,
+                status: "cancelled",
+                error: "起始笔记已删除；结果不再应用。",
+              },
+              seq,
+            );
+        break;
+      }
+      case "note.cancelled": {
+        const n = this.note(p.id);
+        if (!["pending", "running", "partial", "failed"].includes(n.status))
+          throw new Error("任务已完成");
+        save({
+          ...n,
+          status: "cancelled",
+          error: "已取消；已发送的请求仍可能计费。",
+        });
+        break;
+      }
+      case "notes.move-batch": {
+        if (p.threadId) this.requireThread(p.threadId, true);
+        const before: Record<
+          string,
+          { threadId: string | null; version: number }
+        > = {};
+        for (const id of this.withDiscussions(p.ids)) {
+          const n = this.note(id);
+          if (
+            n.deletedAt ||
+            (p.bases[id] !== undefined &&
+              p.bases[id] !== (n.assignmentRevision ?? 0))
+          )
+            throw new Error("笔记归属已变化，请重新预览");
+          before[id] = {
+            threadId: n.threadId,
+            version: (n.assignmentRevision ?? 0) + 1,
+          };
+          save({
+            ...n,
+            threadId: p.threadId,
+            assignmentLocked: true,
+            assignmentRevision: before[id].version,
+          });
+        }
+        this.put("moves", p.id, { id: p.id, before, undone: false }, seq);
+        break;
+      }
+      case "notes.undo-move": {
+        const move = this.get<any>("moves", p.id);
+        if (!move || move.undone) throw new Error("移动已撤销或不存在");
+        for (const [id, old] of Object.entries(move.before) as [
+          string,
+          { threadId: string | null; version: number },
+        ][]) {
+          const n = this.note(id);
+          if (n.deletedAt || n.assignmentRevision !== old.version)
+            throw new Error("移动后归属已有修改，不能直接撤销");
+          save({
+            ...n,
+            threadId: old.threadId,
+            assignmentLocked: true,
+            assignmentRevision: old.version + 1,
+          });
+        }
+        this.put("moves", p.id, { ...move, undone: true }, seq);
+        break;
+      }
       case "note.added": {
         if (this.get("notes", p.id)) throw new Error("记录 ID 重复");
         if (p.threadId) this.requireThread(p.threadId);
         if (p.parentNoteId) {
           const parent = this.note(p.parentNoteId);
+          if (parent.deletedAt)
+            throw new Error("起始笔记已删除，请先恢复后再回复");
           if (p.mode !== "discussion" || parent.parentNoteId)
             throw new Error("讨论须关联起始笔记，不能嵌套");
           this.revision(parent.id, p.parentRevision ?? 0);
@@ -591,7 +861,21 @@ export class Store {
       case "note.failed":
       case "note.retried": {
         const n = this.note(p.id);
-        if (e.type === "note.retried" && n.status !== "failed")
+        if (
+          n.deletedAt ||
+          n.purged ||
+          (e.type !== "note.retried" && n.status === "cancelled")
+        )
+          break;
+        if (
+          p.inputRevision !== undefined &&
+          p.inputRevision !== (n.revision ?? 0)
+        )
+          break;
+        if (
+          e.type === "note.retried" &&
+          !["failed", "partial", "cancelled"].includes(n.status)
+        )
           throw new Error("只有失败的记录可以重试");
         n.status =
           e.type === "note.started"
@@ -614,8 +898,7 @@ export class Store {
       case "note.completed": {
         const n = this.note(p.id);
         if (p.threadId) this.requireThread(p.threadId);
-        if (n.mode === "note" && p.result.reply.length > 150)
-          throw new Error("自动回应超过长度限制");
+        if (n.deletedAt || n.purged || n.status === "cancelled") break;
         if (p.inputRevision !== undefined && p.inputRevision !== n.revision)
           throw new Error("原文已经更正，请重新处理");
         if (!n.titleLocked) n.title = p.result.title;
@@ -629,8 +912,15 @@ export class Store {
         if (n.processing && p.usage) n.processing.usage = p.usage;
         if (n.parentNoteId) n.threadId = this.note(n.parentNoteId).threadId;
         else if (!n.assignmentLocked) n.threadId = p.threadId;
-        n.status = "done";
-        n.error = null;
+        n.componentErrors = p.componentErrors;
+        n.status =
+          p.componentErrors && Object.keys(p.componentErrors).length
+            ? "partial"
+            : "done";
+        n.error =
+          n.status === "partial"
+            ? Object.values(p.componentErrors).join("；")
+            : null;
         save(n);
         break;
       }
@@ -649,6 +939,9 @@ export class Store {
       }
       case "note.corrected": {
         const n = this.note(p.id);
+        if (n.deletedAt) throw new Error("请先恢复笔记再编辑");
+        delete n.processing;
+        delete n.componentErrors;
         n.revision = (n.revision ?? 0) + 1;
         n.currentRaw = p.raw;
         n.synopsis = "待生成";
@@ -1029,7 +1322,7 @@ export class Store {
         .iterate())
         this.apply(validateEvent(JSON.parse(String(r.body))), Number(r.seq));
       this.setMeta("projectedSeq", String(this.latestSeq()));
-      this.setMeta("projectionVersion", "2.6");
+      this.setMeta("projectionVersion", "2.7");
       this.db.exec("COMMIT");
     } catch (e) {
       this.db.exec("ROLLBACK");
@@ -1071,7 +1364,7 @@ export class Store {
           !!seen.add(e.id) &&
           !this.db.prepare("SELECT 1 FROM events WHERE id=?").get(e.id),
       )
-      .map(validateEvent);
+      .map((e) => validateEvent(redactEvent(e, this.purgedIds())));
     if (!valid.length) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -1080,6 +1373,51 @@ export class Store {
         const r = insert.run(e.id, JSON.stringify(e));
         this.apply(e, Number(r.lastInsertRowid));
       }
+      if (valid.some((e) => e.type === "note.purged")) {
+        const purged = this.purgedIds();
+        for (const row of this.db.prepare("SELECT id,body FROM events").all()) {
+          const old = JSON.parse(String(row.body));
+          const next = JSON.stringify(redactEvent(old, purged));
+          if (next !== row.body)
+            this.db
+              .prepare("UPDATE events SET body=? WHERE id=?")
+              .run(next, row.id);
+        }
+        for (const batch of this.all<InboxBatch>("batches"))
+          this.put(
+            "batches",
+            batch.id,
+            redactBatch(batch, purged),
+            this.latestSeq(),
+          );
+        for (const t of this.all<AiTask>("tasks"))
+          if (t.input && [...purged].some((id) => t.input!.includes(id))) {
+            delete t.input;
+            delete t.candidate;
+            this.put("tasks", t.id, t, this.latestSeq());
+          }
+        for (const n of this.all<Note>("notes"))
+          if (
+            n.processing &&
+            [...purged].some((id) => n.processing!.input.includes(id))
+          ) {
+            delete n.processing;
+            this.put("notes", n.id, n, this.latestSeq());
+          }
+        for (const id of purged) {
+          for (const key of this.metaKeys("ai-step:" + id + ":"))
+            this.db.prepare("DELETE FROM meta WHERE key=?").run(key);
+          for (const key of this.metaKeys("edit:" + id + ":"))
+            this.db.prepare("DELETE FROM meta WHERE key=?").run(key);
+          this.db
+            .prepare("DELETE FROM meta WHERE key LIKE ?")
+            .run("workspace:conversation:" + id + "%");
+          this.db
+            .prepare("DELETE FROM meta WHERE key LIKE ?")
+            .run("workspace:edit:" + id + ":%");
+        }
+        this.setMeta("purgePending", "1");
+      }
       this.setMeta("projectedSeq", String(this.latestSeq()));
       this.db.exec("COMMIT");
     } catch (e) {
@@ -1087,6 +1425,16 @@ export class Store {
       throw e;
     }
     this.onCommitted?.();
+  }
+  purgedIds(): Set<string> {
+    return new Set(
+      this.db
+        .prepare(
+          "SELECT id FROM entities_v2 WHERE kind='notes' AND json_extract(body,'$.purged')=1",
+        )
+        .all()
+        .map((r) => String(r.id)),
+    );
   }
   eventsAfter(seq = 0): { seq: number; event: ThoughtEvent }[] {
     return this.db
@@ -1225,13 +1573,32 @@ export class Store {
     );
   }
   revision(id: string, revision: number): NoteRevision {
+    const n = this.note(id);
+    if (n.purged)
+      return {
+        id: n.id,
+        noteId: n.id,
+        revision,
+        raw: "笔记已删除",
+        createdAt: n.createdAt,
+      };
     const r = this.get<NoteRevision>("revisions", id + ":" + revision);
     if (!r) throw new Error("引用的原文版本不存在");
     return r;
   }
   detail(id: string) {
+    const note = this.note(id);
+    if (note.status === "failed")
+      for (const key of this.metaKeys("ai-step:" + id + ":")) {
+        try {
+          const attempts = JSON.parse(this.getMeta(key) ?? "[]");
+          const last = attempts.at(-1);
+          if (last?.phase === "started" && last.partial)
+            note.partialReply = last.partial;
+        } catch {}
+      }
     return {
-      note: this.note(id),
+      note,
       revisions: this.db
         .prepare(
           "SELECT body FROM entities_v2 WHERE kind='revisions' AND json_extract(body,'$.noteId')=? ORDER BY seq",
@@ -1244,7 +1611,7 @@ export class Store {
   discussions(id: string, limit = 30, beforeId: string | null = null): Note[] {
     return this.db
       .prepare(
-        "SELECT id FROM note_query_v2 WHERE parentNoteId=? AND (? IS NULL OR seq<(SELECT seq FROM note_query_v2 WHERE id=?)) ORDER BY seq DESC LIMIT ?",
+        "SELECT id FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL AND parentNoteId=? AND (? IS NULL OR seq<(SELECT seq FROM note_query_v2 WHERE id=?)) ORDER BY seq DESC LIMIT ?",
       )
       .all(id, beforeId, beforeId, limit)
       .map((r) => this.note(String(r.id)))
@@ -1263,19 +1630,23 @@ export class Store {
   counts() {
     return {
       notes: Number(
-        this.db.prepare("SELECT COUNT(*) AS n FROM note_query_v2").get()?.n,
+        this.db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL",
+          )
+          .get()?.n,
       ),
       unassigned: Number(
         this.db
           .prepare(
-            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE threadId IS NULL",
+            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE threadId IS NULL AND json_extract(summary,'$.deletedAt') IS NULL",
           )
           .get()?.n,
       ),
       failed: Number(
         this.db
           .prepare(
-            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE status='failed'",
+            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE status IN ('failed','partial') AND json_extract(summary,'$.deletedAt') IS NULL",
           )
           .get()?.n,
       ),
@@ -1321,26 +1692,46 @@ export class Store {
     ];
   }
   private conditions(q: WorkspaceQuery) {
-    const clauses = ["1=1"],
+    const clauses = [
+        q.workspace === "trash"
+          ? "json_extract(summary,'$.deletedAt') IS NOT NULL AND coalesce(json_extract(summary,'$.purged'),0)=0"
+          : "json_extract(summary,'$.deletedAt') IS NULL",
+      ],
       args: (string | number)[] = [];
+    if (q.bookmarked || q.workspace === "favorites")
+      clauses.push("json_extract(summary,'$.bookmarked')=1");
     if (q.workspace === "pending") clauses.push("threadId IS NULL");
     else if (
-      !["all", "organize", "review", "research", "history"].includes(
-        q.workspace,
-      )
+      ![
+        "all",
+        "organize",
+        "review",
+        "research",
+        "history",
+        "trash",
+        "favorites",
+      ].includes(q.workspace)
     ) {
       const ids = this.scopeThreadIds(q.workspace);
       clauses.push(`threadId IN (${ids.map(() => "?").join(",")})`);
       args.push(...ids);
     }
-    if (q.aiFilter === "failed") clauses.push("status='failed'");
+    if (q.aiFilter === "failed") clauses.push("status IN ('failed','partial')");
     if (q.aiFilter === "pending")
       clauses.push("status IN ('pending','running')");
     const terms = q.query?.trim().split(/\s+/).filter(Boolean) ?? [];
     if (terms.length) {
       const cols =
         q.searchIn === "reply" ? ["reply"] : ["raw", "title", "synopsis"];
-      if (terms.every((t) => [...t].length >= 3)) {
+      if (q.includeHistory && q.searchIn !== "reply") {
+        for (const t of terms) {
+          const text = "%" + t.replace(/[\\%_]/g, "\\$&") + "%";
+          clauses.push(
+            "((raw||' '||title||' '||synopsis) LIKE ? ESCAPE '\\' OR id IN (SELECT json_extract(body,'$.noteId') FROM entities_v2 WHERE kind='revisions' AND json_extract(body,'$.raw') LIKE ? ESCAPE '\\'))",
+          );
+          args.push(text, text);
+        }
+      } else if (terms.every((t) => [...t].length >= 3)) {
         const match = terms
           .map((t) => `{${cols.join(" ")}} : "${t.replaceAll('"', '""')}"`)
           .join(" AND ");
@@ -1479,7 +1870,7 @@ export class Store {
       const terms = query.trim().split(/\s+/);
       return this.db
         .prepare(
-          "SELECT id FROM note_query_v2 WHERE " +
+          "SELECT id FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL AND " +
             terms
               .map(
                 () =>
@@ -1507,9 +1898,9 @@ export class Store {
     const ids = threadId ? this.scopeThreadIds(threadId) : [];
     return this.db
       .prepare(
-        "SELECT id FROM note_query_v2" +
+        "SELECT id FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL" +
           (ids.length
-            ? ` WHERE threadId IN (${ids.map(() => "?").join(",")})`
+            ? ` AND threadId IN (${ids.map(() => "?").join(",")})`
             : "") +
           " ORDER BY seq DESC LIMIT ?",
       )
@@ -1519,7 +1910,7 @@ export class Store {
   nextNote(): Note | null {
     const r = this.db
       .prepare(
-        "SELECT n.id FROM note_query_v2 n JOIN entities_v2 e ON e.kind='notes' AND e.id=n.id WHERE n.status='pending' ORDER BY coalesce(json_extract(e.body,'$.reentered'),0),n.seq LIMIT 1",
+        "SELECT n.id FROM note_query_v2 n JOIN entities_v2 e ON e.kind='notes' AND e.id=n.id WHERE n.status='pending' AND json_extract(e.body,'$.deletedAt') IS NULL ORDER BY coalesce(json_extract(e.body,'$.reentered'),0),n.seq LIMIT 1",
       )
       .get();
     return r ? this.note(String(r.id)) : null;
@@ -1549,7 +1940,7 @@ export class Store {
         ? Number(
             this.db
               .prepare(
-                `SELECT COUNT(*) AS n FROM note_query_v2 WHERE threadId IN (${scope.map(() => "?").join(",")})`,
+                `SELECT COUNT(*) AS n FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL AND threadId IN (${scope.map(() => "?").join(",")})`,
               )
               .get(...scope)!.n,
           )
@@ -1859,7 +2250,7 @@ export class Store {
   organizeCandidates(): Note[] {
     return this.db
       .prepare(
-        "SELECT n.id FROM note_query_v2 n WHERE legacy=1 AND threadId IS NULL AND parentNoteId IS NULL AND NOT EXISTS(SELECT 1 FROM task_notes_v2 t JOIN entities_v2 e ON e.kind='tasks' AND e.id=t.taskId WHERE t.noteId=n.id AND json_extract(e.body,'$.kind')='organize') ORDER BY seq LIMIT 10",
+        "SELECT n.id FROM note_query_v2 n WHERE json_extract(summary,'$.deletedAt') IS NULL AND legacy=1 AND threadId IS NULL AND parentNoteId IS NULL AND NOT EXISTS(SELECT 1 FROM task_notes_v2 t JOIN entities_v2 e ON e.kind='tasks' AND e.id=t.taskId WHERE t.noteId=n.id AND json_extract(e.body,'$.kind')='organize') ORDER BY seq LIMIT 10",
       )
       .all()
       .map((r) => this.note(String(r.id)));
@@ -1878,6 +2269,18 @@ export class Store {
     return [...this.all<Usage>("usage"), ...this.all<Usage>("reservations")];
   }
   recoverInterrupted() {
+    const completed = (id: string) =>
+      this.metaKeys("ai-step:" + id + ":").some((key) => {
+        try {
+          const attempts = JSON.parse(this.getMeta(key) ?? "[]");
+          return (
+            attempts.length > 0 &&
+            attempts.every((a: any) => a.phase === "completed")
+          );
+        } catch {
+          return false;
+        }
+      });
     const events: ThoughtEvent[] = [];
     for (const r of this.db
       .prepare("SELECT id FROM note_query_v2 WHERE status='running'")
@@ -1889,6 +2292,11 @@ export class Store {
         }),
       );
     for (const r of this.db
+      .prepare("SELECT id FROM note_query_v2 WHERE status='running'")
+      .all())
+      if (completed(String(r.id)))
+        events.push(this.event("note.retried", { id: String(r.id) }));
+    for (const r of this.db
       .prepare(
         "SELECT body FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.status')='running'",
       )
@@ -1897,8 +2305,10 @@ export class Store {
       events.push(
         this.event("task.updated", {
           id: t.id,
-          status: "failed",
-          error: "上次调用中断，计费无法确认；请手动重试。",
+          status: completed(t.id) ? "pending" : "failed",
+          error: completed(t.id)
+            ? null
+            : "上次调用中断，计费无法确认；请手动重试。",
         }),
       );
     }

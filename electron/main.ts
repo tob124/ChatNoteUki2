@@ -6,11 +6,13 @@ import {
   protocol,
   net,
   shell,
+  dialog,
 } from "electron";
 import { researchInputSchema } from "../src/research";
 import { publicUrl } from "./public-source";
 import { join, resolve, sep } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { Store } from "./store";
@@ -176,6 +178,116 @@ function registerIpc() {
       }
     });
   handle("view", view);
+  handle("referenceTitles", (input) =>
+    Object.fromEntries(
+      z
+        .array(uuid)
+        .max(100)
+        .parse(input)
+        .map((id) => {
+          const n = store.note(id);
+          return [id, n.deletedAt ? "笔记已删除" : n.title];
+        }),
+    ),
+  );
+  handle("aiTasks", () => store.aiTasks());
+  handle("trash", (input, operation) => {
+    const ids = z.array(uuid).min(1).max(10000).parse(input);
+    const type = {
+      trash: "note.trashed",
+      restore: "note.restored",
+      purge: "note.purged",
+    }[z.enum(["trash", "restore", "purge"]).parse(operation)] as
+      "note.trashed" | "note.restored" | "note.purged";
+    store.appendMany(ids.map((id) => store.event(type, { id })));
+    changed();
+  });
+  handle("bookmark", (id, value) =>
+    store.append("note.bookmarked", {
+      id: uuid.parse(id),
+      value: z.boolean().parse(value),
+    }),
+  );
+  handle("pin", (id, value) =>
+    store.append("thread.pinned", {
+      id: uuid.parse(id),
+      value: z.boolean().parse(value),
+    }),
+  );
+  handle("conversations", (id, before) => {
+    const items = store.discussions(
+      uuid.parse(id),
+      31,
+      uuid.optional().parse(before) ?? null,
+    );
+    return store.display({
+      items: items.slice(-30),
+      before: items.length > 30 ? items.at(-30)!.id : null,
+    });
+  });
+  handle("editCognition", (id, baseVersion, content) =>
+    store.append("cognition.edited", {
+      threadId: uuid.parse(id),
+      baseVersion: z.number().int().nonnegative().parse(baseVersion),
+      content: stateContentSchema.parse(content),
+    }),
+  );
+  handle("cancelAi", (id, kind) =>
+    ai.cancel(uuid.parse(id), z.enum(["note", "task"]).parse(kind)),
+  );
+  handle("taskDetail", (id) => store.display(store.task(uuid.parse(id))));
+  handle("moveBatch", (input, target) => {
+    const ids = z.array(uuid).min(1).max(10000).parse(input),
+      threadId = uuid.nullable().parse(target),
+      id = randomUUID();
+    store.append("notes.move-batch", {
+      id,
+      ids,
+      threadId,
+      bases: Object.fromEntries(
+        ids.map((id) => [id, store.note(id).assignmentRevision ?? 0]),
+      ),
+    });
+    return id;
+  });
+  handle("undoMove", (id) =>
+    store.append("notes.undo-move", { id: uuid.parse(id) }),
+  );
+  handle("exportNotes", async (input, thread) => {
+    let ids = z.array(uuid).max(10000).parse(input);
+    const threadId = uuid.optional().parse(thread);
+    if (threadId)
+      ids = store
+        .recent(threadId, 10000)
+        .filter((n) => !n.parentNoteId)
+        .map((n) => n.id);
+    const notes = ids.map((id) => store.note(id)).filter((n) => !n.deletedAt);
+    if (!notes.length) throw new Error("当前范围没有可导出的笔记");
+    const selection = await dialog.showSaveDialog(win!, {
+      title: `导出 ${notes.length} 条笔记`,
+      defaultPath: "ChatNoteUki.md",
+      filters: [
+        { name: "Markdown", extensions: ["md"] },
+        { name: "UTF-8 文本", extensions: ["txt"] },
+      ],
+    });
+    if (selection.canceled || !selection.filePath) return false;
+    const text = notes
+      .map(
+        (n) =>
+          `# ${n.title}\n\n${n.createdAt}\n\n## 用户原文 · v${n.revision ?? 0}\n\n${n.currentRaw ?? n.raw}\n\n${n.synopsis ? "## AI 摘要\n\n" + n.synopsis + "\n\n" : ""}${n.reply ? "## AI 回应\n\n" + n.reply + "\n\n" : ""}` +
+          store
+            .discussions(n.id, 10000)
+            .map(
+              (d) =>
+                `### 用户追问 · 起始正文 v${d.parentRevision ?? 0}\n\n${d.currentRaw ?? d.raw}\n\n${d.reply ? "### AI 回应\n\n" + d.reply : ""}`,
+            )
+            .join("\n\n"),
+      )
+      .join("\n\n---\n\n");
+    writeFileSync(selection.filePath, text, "utf8");
+    return true;
+  });
   handle("dataReport", (before) =>
     store.dataReport(z.number().int().positive().optional().parse(before)),
   );
@@ -195,6 +307,8 @@ function registerIpc() {
                 "review",
                 "research",
                 "history",
+                "trash",
+                "favorites",
               ]),
             ]),
             before: z.number().int().positive().optional(),
@@ -205,6 +319,8 @@ function registerIpc() {
             query: z.string().max(200).optional(),
             searchIn: z.enum(["original", "reply"]).optional(),
             aiFilter: z.enum(["all", "pending", "failed"]).optional(),
+            includeHistory: z.boolean().optional(),
+            bookmarked: z.boolean().optional(),
           })
           .parse(input),
       ),
@@ -222,6 +338,11 @@ function registerIpc() {
         : z
             .object({
               draft: z.string().max(50000),
+              query: z.string().max(200).optional(),
+              searchIn: z.enum(["original", "reply"]).optional(),
+              aiFilter: z.enum(["all", "pending", "failed"]).optional(),
+              includeHistory: z.boolean().optional(),
+              bookmarked: z.boolean().optional(),
               mode: z.enum(["note", "discussion"]),
               parentNoteId: uuid.nullable(),
               parentRevision: z.number().int().nonnegative().optional(),
@@ -270,7 +391,17 @@ function registerIpc() {
         .parse(input),
     ),
   );
-  handle("correct", (id, raw) => {
+  handle("correct", (id, raw, baseVersion) => {
+    const note = store.note(uuid.parse(id));
+    if (note.deletedAt) throw new Error("笔记已删除，请先恢复");
+    const version = z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .parse(baseVersion);
+    if (version !== undefined && version !== (note.revision ?? 0))
+      throw new Error("正文已变化，请核对草稿后重新编辑");
     store.append("note.corrected", {
       id: uuid.parse(id),
       raw: z
@@ -282,12 +413,17 @@ function registerIpc() {
     });
     void ai.pump();
   });
-  handle("title", (id, title) =>
+  handle("title", (id, title, baseTitle) => {
+    const note = store.note(uuid.parse(id));
+    if (note.deletedAt) throw new Error("笔记已删除，请先恢复");
+    const base = z.string().max(200).optional().parse(baseTitle);
+    if (base !== undefined && base !== note.title)
+      throw new Error("标题已变化，请核对后重新编辑");
     store.append("note.titled", {
       id: uuid.parse(id),
       title: z.string().trim().min(1).max(60).parse(title),
-    }),
-  );
+    });
+  });
   handle("structure", (ids, decision, target, targets) =>
     store.resolveStructures(
       z.array(uuid).min(1).max(30).parse(ids),
@@ -312,8 +448,9 @@ function registerIpc() {
   });
   handle("retryTask", (id) => {
     const task = store.task(uuid.parse(id));
-    if (!task || !["failed", "budget"].includes(task.status))
+    if (!task || !["failed", "budget", "partial"].includes(task.status))
       throw new Error("该任务不能重试");
+    ai.allowManualRetry(task.id);
     store.append("task.updated", {
       id: task.id,
       status: "pending",
@@ -365,6 +502,7 @@ function registerIpc() {
   });
   handle("search", (query) => store.search(z.string().max(200).parse(query)));
   handle("retry", (id) => {
+    ai.allowManualRetry(uuid.parse(id));
     store.append("note.retried", { id: uuid.parse(id) });
     changed();
     void ai.pump();
@@ -478,7 +616,15 @@ else {
       store.reimportRawNotes();
       store.recoverInterrupted();
       credentials = new Credentials(join(data, "credentials.json"));
-      ai = new AiQueue(store, credentials, changed);
+      ai = new AiQueue(
+        store,
+        credentials,
+        changed,
+        undefined,
+        undefined,
+        undefined,
+        (id, text) => win?.webContents.send("uki:progress", { id, text }),
+      );
       configureSync();
       store.onCommitted = () => {
         notify();
