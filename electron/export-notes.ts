@@ -3,6 +3,10 @@ import { Store } from "./store";
 export function* exportNotes(store: Store, notes: Note[]): Generator<string> {
   for (const n of notes) {
     yield `# ${n.title.replace(/[\r\n]+/g, " ")}\n\n${n.createdAt}\n\n## 用户原文 · v${n.revision ?? 0}\n\n${n.currentRaw ?? n.raw}\n\n`;
+    if (n.materialQuote && !n.deletedAt) {
+      const source = store.quoteSource(n.id);
+      yield `## 参考摘录（非用户原话）\n\n${source.quote.text}\n\n来源：${source.quote.name} · ${source.quote.page ? "PDF 第 " + source.quote.page + " 页 · " : ""}段落 ${source.quote.segmentId}${source.material && !source.current ? "（提取内容已变化，请核对旧摘录）" : !source.material ? "（资料已删除）" : ""}\n\n`;
+    }
     if (n.synopsis && n.synopsis !== "待生成")
       yield `## AI 摘要\n\n${n.synopsis}\n\n`;
     if (n.reply) yield `## AI 回应\n\n${n.reply}\n\n`;

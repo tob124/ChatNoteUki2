@@ -211,7 +211,7 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
       "王者匹配机制是否公平 · 回顾",
     );
     await expect(
-      page.getByText("这里汇集已生成的线程回顾", { exact: false }),
+      page.getByText("这里汇集线程回顾和所选笔记分析", { exact: false }),
     ).toBeVisible();
     await expect(page.getByLabel("写下想法")).toHaveCount(0);
     await page.getByRole("button", { name: "进入问题", exact: true }).click();

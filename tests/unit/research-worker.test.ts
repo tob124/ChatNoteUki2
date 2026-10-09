@@ -190,7 +190,7 @@ it("research task saves exact original versions, sources and result atomically, 
   expect(replayed.snapshot().researches).toEqual([saved]);
   const dav = new FakeDav();
   await new SyncEngine(s, dav, () => {}).backup();
-  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
+  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(6);
   const recovered = makeStore();
   await new SyncEngine(recovered, dav, () => {}).restore();
   expect(recovered.snapshot().researches).toEqual([saved]);

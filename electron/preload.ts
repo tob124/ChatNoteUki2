@@ -23,6 +23,13 @@ ipcRenderer.on("uki:flush", async (_event, id: string) => {
   }
 });
 const api: UkiApi = {
+  savedQueries: () => ipcRenderer.invoke("uki:savedQueries"),
+  saveQuery: (input) => ipcRenderer.invoke("uki:saveQuery", input),
+  deleteQuery: (id) => ipcRenderer.invoke("uki:deleteQuery", id),
+  captureExcerpt: (input) => ipcRenderer.invoke("uki:captureExcerpt", input),
+  quoteSource: (id) => ipcRenderer.invoke("uki:quoteSource", id),
+  analyzeSelection: (input) =>
+    ipcRenderer.invoke("uki:analyzeSelection", input),
   locateNote: (id) => ipcRenderer.invoke("uki:locateNote", id),
   onFlush: (callback) => {
     flushers.add(callback);

@@ -167,6 +167,7 @@ const manifestSchema = z.object({
     z.literal(3),
     z.literal(4),
     z.literal(5),
+    z.literal(6),
   ]),
   deviceId: z.string().uuid(),
   generation: z.number().int().nonnegative(),
@@ -181,6 +182,7 @@ const eventFileSchema = z.object({
     z.literal(3),
     z.literal(4),
     z.literal(5),
+    z.literal(6),
   ]),
   events: z.array(z.unknown()).max(100),
 });
@@ -254,7 +256,7 @@ export class SyncEngine {
     if (r.status === 404) return { value: null, etag: null };
     ok(r, "读取恢复清单");
     const decoded = JSON.parse(text(r));
-    if (![1, 2, 3, 4, 5].includes(decoded.schemaVersion))
+    if (![1, 2, 3, 4, 5, 6].includes(decoded.schemaVersion))
       throw new Error("云端资料格式不受此版本支持，请升级软件后再同步");
     return { value: manifestSchema.parse(decoded), etag: r.etag };
   }
@@ -446,7 +448,7 @@ export class SyncEngine {
       }
       const file = `events/${chunk[0].event.id}_${chunk.at(-1)!.event.id}.json`;
       const content = JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         events: chunk.map((r) => r.event),
       });
       const digest = hash(content);
@@ -466,7 +468,7 @@ export class SyncEngine {
     if (!rows.length && remote.value && strongEtag(remote.etag))
       return this.maintainPurges({ value: remote.value, etag: remote.etag });
     const next: Manifest = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       deviceId: this.store.getMeta("deviceId")!,
       generation: (remote.value?.generation ?? 0) + 1,
       batches,
@@ -536,7 +538,7 @@ export class SyncEngine {
         batches.push(batch);
         continue;
       }
-      const content = JSON.stringify({ schemaVersion: 5, events }),
+      const content = JSON.stringify({ schemaVersion: 6, events }),
         digest = hash(content);
       const stable =
         digest.slice(0, 8) +
@@ -580,7 +582,7 @@ export class SyncEngine {
     if (changed) {
       const next = {
         ...remote.value,
-        schemaVersion: 5 as const,
+        schemaVersion: 6 as const,
         generation: remote.value.generation + 1,
         batches,
         updatedAt: new Date().toISOString(),

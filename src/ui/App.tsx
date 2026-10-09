@@ -35,6 +35,9 @@ import { ThreadDialog } from "./ThreadDialog";
 import { SettingsModal } from "./SettingsModal";
 import { TaskPanel } from "./TaskPanel";
 import { MaterialLibrary } from "./MaterialLibrary";
+import { SearchTools } from "./SearchTools";
+import { SelectionAnalysis } from "./SelectionAnalysis";
+import type { SavedQuery } from "../workspace-tools";
 const blank = (): WorkspaceState => ({
   draft: "",
   mode: "note",
@@ -82,6 +85,7 @@ export function App() {
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
   const [taskPanel, setTaskPanel] = useState(false);
+  const [analysisNotes, setAnalysisNotes] = useState<Note[] | null>(null);
   const [materialOpen, setMaterialOpen] = useState<string>();
   const captureLock = useRef(false),
     submission = useRef<{ raw: string; id: string } | null>(null);
@@ -140,6 +144,11 @@ export function App() {
             ...current.state,
             ...readingPosition(),
           });
+          if (current.state.savedQueryId)
+            await window.uki.workspaceState(
+              "query:" + current.state.savedQueryId,
+              { ...current.state, ...readingPosition() },
+            );
         }
       }),
     [],
@@ -193,6 +202,11 @@ export function App() {
         setNewContent(true);
       seenHead.current = { scope, seq: result.newestSeq };
       setPage(result);
+      setSelectedNotes((ids) =>
+        ids.filter((id) =>
+          result.items.some((i) => i.kind === "note" && i.value.id === id),
+        ),
+      );
       setLoading(false);
     }
   }, [
@@ -291,6 +305,10 @@ export function App() {
       void window.uki
         .workspaceState(workspace, state)
         .catch((e) => setError(cleanError(e)));
+    if (ready && state.savedQueryId)
+      void window.uki
+        .workspaceState("query:" + state.savedQueryId, state)
+        .catch((e) => setError(cleanError(e)));
   }, [ready, workspace, state]);
   useEffect(() => {
     if (!page || restoreScroll.current === null) return;
@@ -356,6 +374,11 @@ export function App() {
         ...current.state,
         ...readingPosition(),
       });
+      if (current.state.savedQueryId)
+        await window.uki.workspaceState("query:" + current.state.savedQueryId, {
+          ...current.state,
+          ...readingPosition(),
+        });
       const saved = await window.uki.workspaceState(w);
       if (version !== navVersion.current) return;
       ++pageVersion.current;
@@ -470,6 +493,7 @@ export function App() {
       if (!task.resultId) return;
       if (task.kind === "research") await navigate("research");
       else if (task.threadId) await navigate(task.threadId);
+      else if (task.kind === "recap") await navigate("review");
       else return;
       restoreScroll.current = null;
       patch({
@@ -486,6 +510,52 @@ export function App() {
       setResultToShow(task.resultId);
       setNewContent(false);
     });
+  const openSavedQuery = async (value: SavedQuery) => {
+    if (
+      !["all", "pending", "favorites", "history"].includes(value.workspace) &&
+      !data?.threads.some((t) => t.id === value.workspace)
+    )
+      throw new Error(
+        "查询原来的问题已不存在，请重命名或删除此查询后重新保存范围",
+      );
+    const current = live.current;
+    const requestVersion = navVersion.current;
+    if (current.state.savedQueryId)
+      await window.uki.workspaceState("query:" + current.state.savedQueryId, {
+        ...current.state,
+        ...readingPosition(),
+      });
+    const position = await window.uki.workspaceState("query:" + value.id);
+    const destination =
+      value.workspace === current.workspace
+        ? current.state
+        : await window.uki.workspaceState(value.workspace);
+    if (requestVersion !== navVersion.current) return;
+    const expectedVersion =
+      requestVersion + (value.workspace === current.workspace ? 0 : 1);
+    await navigate(value.workspace);
+    if (navVersion.current !== expectedVersion) return;
+    setState({
+      ...destination,
+      query: value.query,
+      searchIn: value.searchIn,
+      aiFilter: value.aiFilter,
+      includeHistory: value.includeHistory,
+      savedQueryId: value.id,
+      openIds: position.openIds ?? destination.openIds,
+      before: position.before,
+      anchor: position.anchor,
+      anchorOffset: position.anchorOffset,
+      scroll: position.scroll,
+      date: undefined,
+    });
+    setQuery(value.query);
+    setSearchIn(value.searchIn);
+    setAiFilter(value.aiFilter);
+    setDate("");
+    restoreScroll.current = position.scroll ?? "bottom";
+    setReload((n) => n + 1);
+  };
   const preference = (key: string, value: string | boolean | number) => {
     const next = { ...prefs, [key]: value };
     setPrefs(next);
@@ -729,7 +799,7 @@ export function App() {
           <p className="review-intro hint">
             {workspace === "research"
               ? "这里保存围绕笔记和问题的资料分析。打开笔记卡片或问题右侧的「查找资料」，确认搜索词后才联网；资料与 AI 判断不会自动成为你的观点。"
-              : "这里汇集已生成的线程回顾，附原文引用。生成新回顾请进入具体问题，在右侧点击「生成线程回顾」。"}
+              : "这里汇集线程回顾和所选笔记分析，附原文引用。在记录中选择笔记可分析所选；进入具体问题可生成线程回顾。"}
           </p>
         ) : (
           <div className="search-row">
@@ -741,77 +811,43 @@ export function App() {
               maxLength={200}
               onChange={(e) => {
                 setQuery(e.target.value);
-                patch({ before: undefined, query: e.target.value });
+                patch({
+                  before: undefined,
+                  query: e.target.value,
+                  savedQueryId: undefined,
+                });
               }}
             />
-            <select
-              aria-label="搜索范围"
-              value={searchIn}
-              onChange={(e) => {
-                setSearchIn(e.target.value as typeof searchIn);
-                patch({
-                  searchIn: e.target.value as typeof searchIn,
-                  before: undefined,
-                });
+            <SearchTools
+              value={{
+                name: "",
+                workspace,
+                query,
+                searchIn,
+                aiFilter,
+                includeHistory: !!state.includeHistory,
               }}
-            >
-              <option value="original">原文与派生信息</option>
-              <option value="reply">AI 回应</option>
-            </select>
-            <select
-              aria-label="AI 状态筛选"
-              value={aiFilter}
-              onChange={(e) => {
-                setAiFilter(e.target.value as typeof aiFilter);
-                patch({
-                  before: undefined,
-                  aiFilter: e.target.value as typeof aiFilter,
-                });
-              }}
-            >
-              <option value="all">全部状态</option>
-              <option value="pending">AI 待处理</option>
-              <option value="failed">AI 失败</option>
-            </select>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={!!state.includeHistory}
-                onChange={(e) =>
-                  patch({ includeHistory: e.target.checked, before: undefined })
-                }
-              />
-              包含更正历史
-            </label>
-            {workspace !== "all" && query && (
-              <button
-                onClick={() => {
-                  const keyword = query;
-                  void navigate("all").then(() => {
-                    setQuery(keyword);
-                    patch({ query: keyword, before: undefined });
-                  });
-                }}
-              >
-                搜索全部记录
-              </button>
-            )}
-            {(query || aiFilter !== "all" || state.includeHistory) && (
-              <button
-                onClick={() => {
-                  setQuery("");
-                  setAiFilter("all");
+              threads={data.threads}
+              onError={setError}
+              onOpen={openSavedQuery}
+              onAll={() => {
+                const keyword = query;
+                void navigate("all").then(() => {
+                  setQuery(keyword);
                   patch({
-                    query: "",
-                    aiFilter: "all",
-                    includeHistory: false,
+                    query: keyword,
                     before: undefined,
+                    savedQueryId: undefined,
                   });
-                }}
-              >
-                清除筛选
-              </button>
-            )}
+                });
+              }}
+              onChange={(v) => {
+                if (v.query !== undefined) setQuery(v.query);
+                if (v.searchIn) setSearchIn(v.searchIn);
+                if (v.aiFilter) setAiFilter(v.aiFilter);
+                patch({ ...v, before: undefined, savedQueryId: undefined });
+              }}
+            />
           </div>
         )}
         {error && (
@@ -866,22 +902,6 @@ export function App() {
         {selectedNotes.length > 0 && (
           <div className="bulk-bar">
             <span>已选当前页 {selectedNotes.length} 条笔记</span>
-            <select
-              aria-label="批量移动目标"
-              value={moveTarget}
-              onChange={(e) => {
-                setMoveTarget(e.target.value);
-                setMovePreview(false);
-              }}
-            >
-              <option value="">待整理</option>
-              {active.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.parentId ? "↳ " : ""}
-                  {t.title}
-                </option>
-              ))}
-            </select>
             {workspace === "trash" ? (
               <>
                 <button
@@ -923,26 +943,82 @@ export function App() {
               </>
             ) : (
               <>
-                <button onClick={() => setMovePreview(true)}>移动预览</button>
                 <button
+                  className="primary"
+                  disabled={page?.items.some(
+                    (i) =>
+                      i.kind === "note" &&
+                      selectedNotes.includes(i.value.id) &&
+                      (i.value as Note).mode === "discussion",
+                  )}
+                  title="只分析独立笔记的最新正文；对话请在原笔记卡片中继续"
                   onClick={() =>
-                    action(() => window.uki.exportNotes(selectedNotes))
+                    setAnalysisNotes(
+                      page?.items
+                        .filter(
+                          (i) =>
+                            i.kind === "note" &&
+                            selectedNotes.includes(i.value.id),
+                        )
+                        .map((i) => i.value as Note) ?? [],
+                    )
                   }
                 >
-                  导出所选…
+                  分析所选…
                 </button>
-                <button
-                  onClick={() =>
-                    action(async () => {
-                      await window.uki.trash(selectedNotes, "trash");
-                      setUndoTrash(selectedNotes);
-                      setSelectedNotes([]);
-                      setNotice("已移入回收站");
-                    })
-                  }
+                <details
+                  className="bulk-more"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.currentTarget.open = false;
+                      e.currentTarget
+                        .querySelector<HTMLElement>("summary")
+                        ?.focus();
+                    }
+                  }}
                 >
-                  移入回收站
-                </button>
+                  <summary>更多操作</summary>
+                  <div className="bulk-options">
+                    <select
+                      aria-label="批量移动目标"
+                      value={moveTarget}
+                      onChange={(e) => {
+                        setMoveTarget(e.target.value);
+                        setMovePreview(false);
+                      }}
+                    >
+                      <option value="">待整理</option>
+                      {active.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.parentId ? "↳ " : ""}
+                          {t.title}
+                        </option>
+                      ))}
+                    </select>
+                    <button onClick={() => setMovePreview(true)}>
+                      移动预览
+                    </button>
+                    <button
+                      onClick={() =>
+                        action(() => window.uki.exportNotes(selectedNotes))
+                      }
+                    >
+                      导出所选…
+                    </button>
+                    <button
+                      onClick={() =>
+                        action(async () => {
+                          await window.uki.trash(selectedNotes, "trash");
+                          setUndoTrash(selectedNotes);
+                          setSelectedNotes([]);
+                          setNotice("已移入回收站");
+                        })
+                      }
+                    >
+                      移入回收站
+                    </button>
+                  </div>
+                </details>
               </>
             )}
             <button
@@ -1408,6 +1484,19 @@ export function App() {
           threads={data.threads}
           onAction={action}
           onClose={() => setEditingThread(null)}
+        />
+      )}
+      {analysisNotes && (
+        <SelectionAnalysis
+          notes={analysisNotes}
+          onClose={() => setAnalysisNotes(null)}
+          onQueued={() => {
+            setAnalysisNotes(null);
+            setNotice("所选笔记分析已排队，完成后可在回顾中查看");
+            setSelectedNotes([]);
+            setTaskPanel(true);
+            void refresh();
+          }}
         />
       )}
       <details className="reading-preferences">

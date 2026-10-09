@@ -42,7 +42,9 @@ test("search old version, verify reference, locate and reply, return; paged dial
     await page.getByRole("button", { name: "全部记录", exact: false }).click();
     await page.getByLabel("搜索历史").fill("旧版本独特令牌");
     await expect(page.locator(".record")).toHaveCount(0);
+    await page.getByText("筛选与查询", { exact: true }).click();
     await page.getByLabel("包含更正历史").check();
+    await page.getByLabel("包含更正历史").press("Escape");
     await expect(page.locator(".record")).toHaveCount(1);
     await page.getByRole("button", { name: "核对旧正文", exact: true }).click();
     await expect(page.locator(".reference-raw")).toHaveText("旧版本独特令牌");

@@ -28,6 +28,24 @@ export function redactEvent(
   ids: Set<string>,
 ): ThoughtEvent {
   const p = event.payload as any;
+  if (
+    event.type === "note.added" &&
+    p.materialQuote &&
+    ids.has(p.materialQuote.materialId)
+  ) {
+    event = {
+      ...event,
+      payload: {
+        ...p,
+        materialQuote: {
+          ...p.materialQuote,
+          text: "资料已删除",
+          start: 0,
+          end: 5,
+        },
+      },
+    };
+  }
   if (event.type === "material.updated" && ids.has(p.id)) {
     const value = { ...p.value };
     if ("segments" in value) value.segments = [];
@@ -47,6 +65,7 @@ export function redactEvent(
         title: "笔记已删除",
         synopsis: "",
         reply: null,
+        materialQuote: undefined,
       },
     };
   if (event.type === "note.corrected" && ids.has(p.id))

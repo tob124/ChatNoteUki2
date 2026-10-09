@@ -154,7 +154,7 @@ it("publishes format 5 and restores reentered data without another AI request or
   fixture(s);
   s.reimportRawNotes();
   await new SyncEngine(s, dav).backup();
-  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
+  expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(6);
   const restored = open();
   await new SyncEngine(restored, dav).restore();
   expect(restored.snapshot()).toEqual(s.snapshot());

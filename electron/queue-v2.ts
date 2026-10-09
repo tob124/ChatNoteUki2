@@ -14,6 +14,10 @@ import { parseRecapResult, recapInstructions } from "./recap-result";
 import { parseNoteParts } from "./note-result";
 import { AiRequests, BudgetError, PartialResultError } from "./ai-request";
 import { countTokens } from "./token-count";
+import {
+  selectionInputSchema,
+  type SelectionInput,
+} from "../src/workspace-tools";
 import { researchInputSchema, type ResearchInput } from "../src/research";
 import { DeepSeekSearch, type ResearchSearch } from "./research-search";
 import { readPublicPage } from "./public-source";
@@ -391,6 +395,26 @@ export class AiQueue {
         parsed.history.shift();
       context = JSON.stringify(parsed);
     }
+    const quoteOwner = n.materialQuote
+      ? n.id
+      : n.parentNoteId && this.store.note(n.parentNoteId).materialQuote
+        ? n.parentNoteId
+        : null;
+    if (quoteOwner) {
+      const source = this.store.quoteSource(quoteOwner);
+      const parsed = JSON.parse(context);
+      parsed.referenceExcerpt =
+        source.material && source.current
+          ? {
+              materialId: source.quote.materialId,
+              text: source.quote.text,
+              name: source.quote.name,
+              page: source.quote.page,
+              role: "参考资料原文，非用户表达；用户正文是 raw",
+            }
+          : { status: "原参考资料已删除或提取变化，不使用旧摘录作为新证据" };
+      context = JSON.stringify(parsed);
+    }
     if (n.materialIds?.length && !n.processing) {
       const parsed = JSON.parse(context);
       parsed.referenceMaterials = [];
@@ -497,6 +521,14 @@ export class AiQueue {
     }
     const live = this.store.note(n.id);
     if (live.deletedAt || live.status === "cancelled") return;
+    if (
+      quoteOwner &&
+      JSON.parse(context).referenceExcerpt?.materialId &&
+      !this.store.quoteSource(quoteOwner).current
+    )
+      throw new Error(
+        "参考摘录在生成期间已删除或改变，结果未应用；请核对后重试",
+      );
     if (n.materialIds?.some((id) => this.store.material(id).deletedAt))
       throw new Error("参考资料在生成期间已删除，结果未应用，请重新选择后重试");
     const threadId = n.parentNoteId
@@ -613,20 +645,33 @@ export class AiQueue {
       }
       const context =
         task.input ??
-        (task.kind === "organize"
-          ? this.organizeContext(task.noteIds.map((id) => this.store.note(id)))
-          : buildContext(
-              this.store,
-              "请回看这个问题的判断与变化",
-              task.threadId,
-              null,
-              null,
-              true,
-              this.config.settings().contextTokens,
-            ));
+        (task.selection
+          ? this.selectionContext(task.selection)
+          : task.kind === "organize"
+            ? this.organizeContext(
+                task.noteIds.map((id) => this.store.note(id)),
+              )
+            : buildContext(
+                this.store,
+                "请回看这个问题的判断与变化",
+                task.threadId,
+                null,
+                null,
+                true,
+                this.config.settings().contextTokens,
+              ));
       const bases = task.inputBases ?? {
         threads: Object.fromEntries(
-          this.store.threads().map((t) => [t.id, t.revision ?? 0]),
+          this.store
+            .threads()
+            .filter(
+              (t) =>
+                !task.selection ||
+                task.noteIds.some(
+                  (id) => this.store.note(id).threadId === t.id,
+                ),
+            )
+            .map((t) => [t.id, t.revision ?? 0]),
         ),
         notes: Object.fromEntries(
           task.noteIds.map((id) => [
@@ -851,7 +896,10 @@ export class AiQueue {
         ]);
       } else {
         const result = (await this.request(
-          recapInstructions,
+          recapInstructions +
+            (task.selection
+              ? "围绕 raw 中用户指定的问题分析，仅使用明确选定的正文；不要扩展成全线程或全库结论。"
+              : ""),
           context,
           task.model,
           16384,
@@ -875,9 +923,14 @@ export class AiQueue {
             createdAt: new Date().toISOString(),
             start: times[0],
             end: times.at(-1),
-            total: this.store.resources(task.threadId).count,
+            total: task.selection
+              ? task.selection.notes.length
+              : this.store.resources(task.threadId).count,
+            ...(task.selection
+              ? { scope: "selection", question: task.selection.question }
+              : {}),
             sampled: refs.length,
-            baseVersion: parsed.current.version,
+            baseVersion: parsed.current?.version ?? 0,
             evidence: refs.filter((r) => result.evidenceIds.includes(r.noteId)),
             expressed: result.expressed,
             possible: result.possible,
@@ -1135,5 +1188,59 @@ export class AiQueue {
     if (!resources.count)
       throw new Error("这个问题还没有记录，先添加笔记再生成分析。");
     return this.store.addTask(kind, threadId, model);
+  }
+  selectionContext(input: SelectionInput): string {
+    const history = input.notes.map((ref) => {
+      const n = this.store.note(ref.noteId);
+      if (
+        n.deletedAt ||
+        n.purged ||
+        n.mode !== "note" ||
+        n.parentNoteId ||
+        (n.revision ?? 0) !== ref.revision
+      )
+        throw new Error("所选笔记已更正或删除，请重新核对分析范围");
+      return {
+        id: n.id,
+        title: n.title,
+        raw: n.currentRaw ?? n.raw,
+        revision: ref.revision,
+        createdAt: n.createdAt,
+        mode: "note",
+        parentNoteId: null,
+        truncated: false,
+      };
+    });
+    const context = JSON.stringify({
+      raw: input.question,
+      selectedThreadId: null,
+      current: null,
+      threads: [],
+      history,
+      coverage: `仅本次所选 ${history.length} 条最新正文；不包含其他笔记或对话`,
+    });
+    if (
+      countTokens(context + recapInstructions + system) >
+      this.config.settings().contextTokens - 2048
+    )
+      throw new Error(
+        "所选正文超过本次容量，请减少笔记数量或在高级设置提高上下文容量；没有发送 AI 请求",
+      );
+    return context;
+  }
+  queueSelection(value: unknown): string {
+    if (!this.config.apiKey())
+      throw new Error("请先在设置中配置 DeepSeek API key，再分析所选笔记");
+    const input = selectionInputSchema.parse(value);
+    input.notes.sort((a, b) => a.noteId.localeCompare(b.noteId));
+    this.selectionContext(input);
+    return this.store.addTask(
+      "recap",
+      null,
+      "deepseek-flash",
+      input.notes.map((n) => n.noteId),
+      undefined,
+      input,
+    );
   }
 }

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Material, MaterialSummary } from "../materials";
 import type { Action } from "./RecordCard";
+import type { QuoteLocator } from "../workspace-tools";
+import { ExcerptComposer } from "./ExcerptComposer";
 const labels: Record<string, string> = {
   extracting: "提取文字",
   pending: "摘要排队",
@@ -37,6 +39,10 @@ export function MaterialLibrary({
     [busy, setBusy] = useState(false),
     [purge, setPurge] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const [quote, setQuote] = useState<QuoteLocator | null>(null),
+    [editingQuote, setEditingQuote] = useState(false),
+    [recorded, setRecorded] = useState(false);
   useEffect(() => {
     let active = true;
     if (openId)
@@ -70,6 +76,31 @@ export function MaterialLibrary({
       active = false;
     };
   }, [query, before, trash, noteId, revisionToken]);
+  const listedSource = page.items.find((m) => m.id === detail?.id);
+  const readerVersion = listedSource
+    ? JSON.stringify([
+        listedSource.revision,
+        listedSource.status,
+        listedSource.summary,
+        listedSource.coverage,
+        listedSource.deletedAt,
+      ])
+    : revisionToken;
+  useEffect(() => {
+    if (!detail) return;
+    let active = true;
+    void window.uki
+      .materialDetail(detail.id)
+      .then((value) => {
+        if (active) setDetail(value);
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [detail?.id, readerVersion]);
   useEffect(() => {
     if (detail) {
       dialog.current?.showModal();
@@ -80,6 +111,7 @@ export function MaterialLibrary({
   }, [detail?.id]);
   const act = (fn: () => Promise<unknown>) => {
     if (busy) return;
+    if (!detail) opener.current = document.activeElement as HTMLElement;
     setBusy(true);
     setError("");
     onAction(async () => {
@@ -93,8 +125,14 @@ export function MaterialLibrary({
     });
   };
   const close = () => {
+    setQuote(null);
+    setEditingQuote(false);
+    setRecorded(false);
     setDetail(null);
     setPurge(false);
+    requestAnimationFrame(() => {
+      if (opener.current?.isConnected) opener.current.focus();
+    });
   };
   return (
     <section
@@ -352,8 +390,36 @@ export function MaterialLibrary({
           )}
           <h3>提取文字 · 第 {readPage + 1} 页</h3>
           <p className="hint">
-            每页最多显示 30 段。段落与 PDF 页码保留，可对照原文件核验。
+            每页最多显示 30 段。选中文字可摘录；键盘聚焦段落后按 Enter
+            可记录整段想法。
           </p>
+          {recorded && (
+            <p className="hint" role="status">
+              想法已保存到本机，可在全部记录查阅；资料阅读位置保留。
+            </p>
+          )}
+          {quote && !editingQuote && !detail.deletedAt && (
+            <button
+              className="primary excerpt-trigger"
+              onClick={() => setEditingQuote(true)}
+            >
+              摘录并记录想法
+            </button>
+          )}
+          {quote && editingQuote && !detail.deletedAt && (
+            <ExcerptComposer
+              quote={quote}
+              name={detail.name}
+              noteId={noteId}
+              onClose={() => setEditingQuote(false)}
+              onSaved={() => {
+                setRecorded(true);
+                setEditingQuote(false);
+                setQuote(null);
+                onAction(async () => {});
+              }}
+            />
+          )}
           {detail.segments
             .slice(readPage * 30, (readPage + 1) * 30)
             .map((s) => (
@@ -365,7 +431,68 @@ export function MaterialLibrary({
                 <span className="section-label">
                   {s.page ? `PDF 第 ${s.page} 页 · ` : ""}段落 {s.id}
                 </span>
-                <p>{s.text}</p>
+                <p
+                  tabIndex={0}
+                  data-source-text
+                  onMouseUp={(e) => {
+                    if (editingQuote || detail.deletedAt) return;
+                    const selected = window.getSelection();
+                    if (
+                      !selected ||
+                      selected.isCollapsed ||
+                      !selected.rangeCount
+                    ) {
+                      setQuote(null);
+                      return;
+                    }
+                    const range = selected.getRangeAt(0),
+                      el = e.currentTarget;
+                    if (
+                      !el.contains(range.startContainer) ||
+                      !el.contains(range.endContainer)
+                    ) {
+                      setQuote(null);
+                      return;
+                    }
+                    const prefix = range.cloneRange();
+                    prefix.selectNodeContents(el);
+                    prefix.setEnd(range.startContainer, range.startOffset);
+                    const start = prefix.toString().length,
+                      text = range.toString();
+                    if (text.length > 12000 || !text.trim()) {
+                      setError("摘录请选择 1–12000 个字符的原文");
+                      return;
+                    }
+                    setQuote({
+                      materialId: detail.id,
+                      sha256: detail.sha256,
+                      segmentId: s.id,
+                      start,
+                      end: start + text.length,
+                      text,
+                    });
+                    setRecorded(false);
+                  }}
+                  onKeyUp={(e) => {
+                    if (
+                      e.key === "Enter" &&
+                      !detail.deletedAt &&
+                      !editingQuote
+                    ) {
+                      setQuote({
+                        materialId: detail.id,
+                        sha256: detail.sha256,
+                        segmentId: s.id,
+                        start: 0,
+                        end: s.text.length,
+                        text: s.text,
+                      });
+                      setEditingQuote(true);
+                    }
+                  }}
+                >
+                  {s.text}
+                </p>
               </section>
             ))}
           <div className="record-actions">

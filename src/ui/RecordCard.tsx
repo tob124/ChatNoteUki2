@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { NoteReply } from "./NoteReply";
 import { ResearchControls } from "./ResearchControls";
 import { MaterialLibrary } from "./MaterialLibrary";
+import { QuoteReference } from "./QuoteReference";
 import type { AiTask } from "../shared";
 import {
   isShortNote,
@@ -435,6 +436,9 @@ export function RecordCard({
           )}
         </p>
       ))}
+      {expanded && (
+        <div>{note.materialQuote && <QuoteReference noteId={note.id} />}</div>
+      )}
       {expanded && (
         <div className="record-body">
           {!detail ? (

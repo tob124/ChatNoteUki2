@@ -104,7 +104,8 @@ export class AiRequests {
       this.store.setMeta(
         cacheKey,
         JSON.stringify(
-          this.store.aiOwnerPurged(owner)
+          this.store.aiOwnerPurged(owner) ||
+            [...this.store.purgedIds()].some((id) => context.includes(id))
             ? attempts.map((a) => ({
                 ...a,
                 partial: undefined,

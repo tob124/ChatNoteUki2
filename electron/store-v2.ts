@@ -4,8 +4,17 @@ import { mkdirSync, existsSync, readdirSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { humanizeGenerated, humanizeText } from "./presentation";
-import { redactEvent, redactBatch } from "./redaction";
+import { redactEvent, redactBatch, digest } from "./redaction";
 import { materialSchema, type Material } from "../src/materials";
+import {
+  savedQueryInputSchema,
+  savedQuerySchema,
+  materialQuoteSchema,
+  excerptInputSchema,
+  selectionInputSchema,
+  type SavedQuery,
+  type ExcerptInput,
+} from "../src/workspace-tools";
 import {
   researchInputSchema,
   researchCheckpointSchema,
@@ -54,6 +63,7 @@ const threadSchema = z.object({
 });
 const noteSchema = z.object({
   materialIds: z.array(uuid).max(10).optional(),
+  materialQuote: materialQuoteSchema.optional(),
   researchId: uuid.optional(),
   id: uuid,
   raw: z.string().min(1).max(50000),
@@ -121,12 +131,13 @@ export const structureInputSchema = z.object({
   evidence: z.array(evidenceSchema).max(30),
 });
 const taskSchema = z.object({
+  selection: selectionInputSchema.optional(),
   id: uuid,
   kind: z.enum(["organize", "cognition", "recap", "research", "material"]),
   materialId: uuid.optional(),
   inputBases: basesSchema.optional(),
   research: researchInputSchema.optional(),
-  noteIds: z.array(uuid).max(10),
+  noteIds: z.array(uuid).max(30),
   threadId: uuid.nullable(),
   model: z.enum(["deepseek-flash", "deepseek-v4-pro"]),
   status: z.literal("pending"),
@@ -259,6 +270,7 @@ const schemas = {
   "structure.undone": z.object({ id: uuid }),
   "task.added": taskSchema,
   "task.updated": z.object({
+    inputBases: basesSchema.optional(),
     resetInput: z.boolean().optional(),
     id: uuid,
     status: z.enum([
@@ -285,9 +297,13 @@ const schemas = {
     result: z.unknown().optional(),
   }),
   "research.added": researchSchema,
+  "query.saved": savedQuerySchema,
+  "query.deleted": z.object({ id: uuid }),
   "recap.added": z.object({
+    scope: z.literal("selection").optional(),
+    question: z.string().max(500).optional(),
     id: uuid,
-    threadId: uuid,
+    threadId: uuid.nullable(),
     createdAt: z.string().datetime(),
     start: z.string().datetime(),
     end: z.string().datetime(),
@@ -305,6 +321,7 @@ export function validateEvent(input: unknown): ThoughtEvent {
   return { ...e, payload: schemas[e.type].parse(e.payload) };
 }
 type Kind =
+  | "queries"
   | "notes"
   | "threads"
   | "cognitions"
@@ -381,6 +398,18 @@ export class Store {
       const file = join(folder, "before-0.4.0-" + Date.now() + ".db");
       this.db.prepare("VACUUM INTO ?").run(file);
       this.setMeta("backup0.4", file);
+    }
+    if (
+      upgradeBackup &&
+      path !== ":memory:" &&
+      this.latestSeq() > 0 &&
+      !this.getMeta("backup0.5")
+    ) {
+      const folder = join(dirname(path), "backups");
+      mkdirSync(folder, { recursive: true });
+      const file = join(folder, "before-0.5.0-" + Date.now() + ".db");
+      this.db.prepare("VACUUM INTO ?").run(file);
+      this.setMeta("backup0.5", file);
     }
     if (
       this.getMeta("projectionVersion") !== "2.9" ||
@@ -576,20 +605,21 @@ export class Store {
         .map((t) => ({
           id: t.id,
           kind: "task" as const,
-          title:
-            {
-              organize: "整理",
-              recap: "线程回顾",
-              cognition: "认知分析",
-              research: "资料分析",
-              material: "附件摘要",
-            }[t.kind] +
-            " · " +
-            (t.materialId
-              ? this.material(t.materialId).name
-              : t.threadId
-                ? this.requireThread(t.threadId).title
-                : "待整理"),
+          title: t.selection
+            ? `所选笔记分析 · ${t.selection.notes.length} 条 · ${t.selection.question}`
+            : {
+                organize: "整理",
+                recap: "线程回顾",
+                cognition: "认知分析",
+                research: "资料分析",
+                material: "附件摘要",
+              }[t.kind] +
+              " · " +
+              (t.materialId
+                ? this.material(t.materialId).name
+                : t.threadId
+                  ? this.requireThread(t.threadId).title
+                  : "待整理"),
           status: t.status,
           stage:
             t.status === "done"
@@ -702,6 +732,8 @@ export class Store {
     };
     delete summary.currentRaw;
     delete summary.processing;
+    if (summary.materialQuote)
+      summary.materialQuote = { ...summary.materialQuote, text: "" };
     this.db
       .prepare(
         `INSERT INTO note_query_v2 VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET threadId=excluded.threadId,parentNoteId=excluded.parentNoteId,status=excluded.status,legacy=excluded.legacy,raw=excluded.raw,title=excluded.title,synopsis=excluded.synopsis,reply=excluded.reply,summary=excluded.summary`,
@@ -761,6 +793,12 @@ export class Store {
     const p = e.payload as any,
       save = (n: Note) => this.put("notes", n.id, n, seq);
     switch (e.type) {
+      case "query.saved":
+        this.put("queries", p.id, p, seq);
+        break;
+      case "query.deleted":
+        this.del("queries", p.id);
+        break;
       case "ai.attempt":
         this.put(
           "attempts",
@@ -1269,7 +1307,7 @@ export class Store {
         break;
       }
       case "recap.added":
-        this.requireThread(p.threadId);
+        if (p.threadId) this.requireThread(p.threadId);
         this.verifyEvidence(p.evidence);
         this.put("recaps", p.id, p, seq);
         break;
@@ -1569,7 +1607,18 @@ export class Store {
             delete t.candidate;
             this.put("tasks", t.id, t, this.latestSeq());
           }
-        for (const n of this.all<Note>("notes"))
+        for (const n of this.all<Note>("notes")) {
+          if (n.materialQuote && purged.has(n.materialQuote.materialId)) {
+            n.materialQuote = {
+              ...n.materialQuote,
+              text: "资料已删除",
+              start: 0,
+              end: 5,
+            };
+            this.put("notes", n.id, n, this.latestSeq());
+            for (const key of this.metaKeys("ai-step:" + n.id + ":"))
+              this.db.prepare("DELETE FROM meta WHERE key=?").run(key);
+          }
           if (
             n.processing &&
             [...purged].some((id) => n.processing!.input.includes(id))
@@ -1577,7 +1626,19 @@ export class Store {
             delete n.processing;
             this.put("notes", n.id, n, this.latestSeq());
           }
+        }
         for (const id of purged) {
+          for (const key of this.metaKeys("workspace:excerpt:" + id + ":")) {
+            const state = JSON.parse(this.getMeta(key) ?? "{}");
+            try {
+              const draft = JSON.parse(state.draft);
+              if (draft.quote) delete draft.quote.text;
+              state.draft = JSON.stringify(draft);
+              this.setMeta(key, JSON.stringify(state));
+            } catch {
+              /* Drafts without source snapshots need no redaction. */
+            }
+          }
           for (const key of this.metaKeys("ai-step:" + id + ":"))
             this.db.prepare("DELETE FROM meta WHERE key=?").run(key);
           for (const key of this.metaKeys("edit:" + id + ":"))
@@ -1881,6 +1942,116 @@ export class Store {
     this.append("note.added", n);
     return n.id;
   }
+  savedQueries(): SavedQuery[] {
+    return this.all<SavedQuery>("queries").sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+  }
+  saveQuery(input: unknown): string {
+    const value = savedQueryInputSchema.parse(input);
+    if (!["all", "pending", "favorites", "history"].includes(value.workspace))
+      this.requireThread(value.workspace);
+    if (value.id && !this.get("queries", value.id))
+      throw new Error("保存的查询已删除，请重新保存");
+    if (!value.id && this.savedQueries().length >= 100)
+      throw new Error("已保存 100 个查询，请先删除不再使用的查询");
+    const id = value.id ?? randomUUID();
+    const old = this.get<SavedQuery>("queries", id);
+    if (
+      old &&
+      old.name === value.name &&
+      old.workspace === value.workspace &&
+      old.query === value.query &&
+      old.searchIn === value.searchIn &&
+      old.aiFilter === value.aiFilter &&
+      old.includeHistory === value.includeHistory
+    )
+      return id;
+    this.append("query.saved", {
+      ...value,
+      id,
+      createdAt: old?.createdAt ?? new Date().toISOString(),
+    });
+    return id;
+  }
+  deleteQuery(id: string) {
+    if (!this.get("queries", id)) throw new Error("查询已删除");
+    this.append("query.deleted", { id });
+  }
+  captureExcerpt(input: ExcerptInput): string {
+    const value = excerptInputSchema.parse(input);
+    const previous = this.get<Note>("notes", value.clientId);
+    if (previous) {
+      const row = this.db
+        .prepare(
+          "SELECT json_extract(body,'$.payload') payload FROM events WHERE json_extract(body,'$.type')='note.added' AND json_extract(body,'$.payload.id')=? LIMIT 1",
+        )
+        .get(value.clientId);
+      const initial: Note = row ? JSON.parse(String(row.payload)) : previous;
+      if (
+        !previous.purged &&
+        initial.raw === value.raw &&
+        initial.threadId === value.threadId &&
+        initial.materialQuote?.materialId === value.quote.materialId &&
+        initial.materialQuote?.start === value.quote.start &&
+        initial.materialQuote?.end === value.quote.end &&
+        initial.materialQuote?.text === value.quote.text &&
+        initial.materialQuote?.sha256 === value.quote.sha256 &&
+        initial.materialQuote?.segmentId === value.quote.segmentId
+      )
+        return previous.id;
+      throw new Error("这次摘录保存请求已被使用，请核对后重新保存");
+    }
+    const material = this.material(value.quote.materialId);
+    const segment = material.segments.find(
+      (s) => s.id === value.quote.segmentId,
+    );
+    if (
+      material.deletedAt ||
+      material.purged ||
+      material.sha256 !== value.quote.sha256 ||
+      !segment ||
+      segment.text.slice(value.quote.start, value.quote.end) !==
+        value.quote.text
+    )
+      throw new Error("资料或摘录范围已变化，请重新选取原文");
+    const note = this.createNote(
+      { raw: value.raw, threadId: value.threadId },
+      "desktop",
+      value.clientId,
+    );
+    note.materialQuote = {
+      ...value.quote,
+      name: material.name,
+      page: segment.page,
+      segmentHash: digest(segment.text),
+    };
+    this.append("note.added", note);
+    return note.id;
+  }
+  quoteSource(id: string) {
+    const note = this.note(id),
+      quote = note.materialQuote;
+    if (note.deletedAt || note.purged || !quote)
+      throw new Error("这条笔记没有可查看的摘录");
+    const material = this.get<Material>("materials", quote.materialId);
+    if (!material || material.deletedAt || material.purged)
+      return {
+        quote: { ...quote, text: "资料已删除", start: 0, end: 5 },
+        material: null,
+        current: false,
+      };
+    const segment = material.segments.find((s) => s.id === quote.segmentId);
+    return {
+      quote,
+      material,
+      current:
+        material.sha256 === quote.sha256 &&
+        !!segment &&
+        digest(segment.text) === quote.segmentHash &&
+        segment.text.slice(quote.start, quote.end) === quote.text,
+    };
+  }
   cognition(threadId: string): Cognition {
     return (
       this.get("cognitions", threadId) ?? {
@@ -2032,6 +2203,8 @@ export class Store {
       clauses.push("parentNoteId IS NULL");
     if (q.bookmarked || q.workspace === "favorites")
       clauses.push("json_extract(summary,'$.bookmarked')=1");
+    if (q.workspace === "history")
+      clauses.push("json_extract(summary,'$.originalThreadId') IS NOT NULL");
     if (q.workspace === "pending") clauses.push("threadId IS NULL");
     else if (
       ![
@@ -2108,9 +2281,8 @@ export class Store {
         "SELECT seq,CASE kind WHEN 'structures' THEN 'structure' WHEN 'researches' THEN 'research' ELSE 'recap' END AS kind,id FROM entities_v2 WHERE kind=?";
       args = [special];
     } else if (q.workspace === "history") {
-      select =
-        "SELECT seq,'note' AS kind,id FROM entities_v2 WHERE kind='notes' AND json_extract(body,'$.originalThreadId') IS NOT NULL";
-      args = [];
+      select = notes;
+      args = c.args;
     } else if (q.workspace === "pending") {
       select = notes;
       args = c.args;
@@ -2619,10 +2791,11 @@ export class Store {
     model: Note["model"],
     noteIds: string[] = [],
     research?: ResearchInput,
+    selection?: import("../src/workspace-tools").SelectionInput,
   ) {
     const existing = this.db
       .prepare(
-        "SELECT id FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.kind')=? AND json_extract(body,'$.threadId') IS ? AND json_extract(body,'$.model')=? AND json_extract(body,'$.noteIds')=? AND coalesce(json_extract(body,'$.research'),'')=? AND json_extract(body,'$.status') IN ('pending','running','budget') LIMIT 1",
+        "SELECT id FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.kind')=? AND json_extract(body,'$.threadId') IS ? AND json_extract(body,'$.model')=? AND json_extract(body,'$.noteIds')=? AND coalesce(json_extract(body,'$.research'),'')=? AND coalesce(json_extract(body,'$.selection'),'')=? AND json_extract(body,'$.status') IN ('pending','running','budget') LIMIT 1",
       )
       .get(
         kind,
@@ -2630,6 +2803,7 @@ export class Store {
         model,
         JSON.stringify(noteIds),
         research ? JSON.stringify(research) : "",
+        selection ? JSON.stringify(selection) : "",
       );
     if (existing) return String(existing.id);
     const id = randomUUID();
@@ -2640,6 +2814,7 @@ export class Store {
       model,
       noteIds,
       ...(research ? { research } : {}),
+      ...(selection ? { selection } : {}),
       status: "pending",
       error: null,
       createdAt: new Date().toISOString(),

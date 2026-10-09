@@ -1,14 +1,14 @@
-# ChatNoteUki 0.4.0
+# ChatNoteUki 0.5.0
 
-0.4.0 的 [交付验收](docs/IMPLEMENTATION-0.4.0.md)、[Flownote 代码对照](docs/FLOWNOTE-COMPARISON.md) 与 [下一轮 15 张功能候选卡](docs/NEXT-FEATURE-CANDIDATES.md)。
+0.5.0 的 [升级与使用说明](docs/UPGRADE-0.5.0.md) 和 [交付检查](docs/IMPLEMENTATION-0.5.0.md)。保留 [Flownote 代码对照](docs/FLOWNOTE-COMPARISON.md) 与 [15 张功能候选卡](docs/NEXT-FEATURE-CANDIDATES.md)，本轮实现保存查询、摘录想法和所选笔记分析。
 
 面向 Windows 10/11 x64 的个人思想工作区。先保存原话，再由 AI 整理标题、分类、摘要与简短回应；离线可以记录。三栏分别承载问题树、笔记与对话、备查资料。记录和 AI 判断明确分开，认知变化须经用户确认。
 
 ## 安装和升级
 
-从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.4.0-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
+从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.5.0-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
 
-升级前自动创建 `backups/before-0.4.0-*.db`。现有正文、更正、人工标题和归属、认知、草稿及凭据保留，不重复已经完成的旧原文重导。云端格式升级为 **5**，继续读取 1–4，旧程序不能继续维护格式 5。详见 [升级说明](docs/UPGRADE-0.4.0.md)。
+升级前自动创建 `backups/before-0.5.0-*.db`。现有正文、更正、人工标题和归属、认知、草稿及凭据保留，不重复已经完成的旧原文重导。云端格式升级为 **6**，继续读取 1–5，旧程序不能继续维护格式 6。详见 [升级说明](docs/UPGRADE-0.5.0.md)。
 
 API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 Windows 用户本机保存，不进入源码、日志或云端备份。思想数据以可读 JSON、文本和文件通过 HTTPS 托管到坚果云，并非端到端加密。凭据和未提交草稿不随换机恢复。
 
@@ -27,6 +27,8 @@ API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 
 认知可直接手动编辑，无须 AI；恢复历史版本也保存为新版本，均校验基础版本。「检查认知变化」提出候选修改；「生成线程回顾」归纳记录并给出引用、推测和继续追问，点击才调用 AI。左侧「回顾」保存已有结果。
 
 搜索显示范围和命中来源，默认检索当前正文、标题、摘要；「包含更正历史」加入旧正文，AI 回应单独检索。引用在右侧打开，可以查看最新正文、定位原记录，再返回查找位置。工作区保存分页、展开项、位置及草稿，新内容不强制滚动。正文、标题、认知、建议编辑草稿可重启恢复，基础内容变化时提示核对。
+
+搜索行的「筛选与查询」可保存常用条件，再次打开会恢复范围和阅读位置。选择当前页笔记后出现「分析所选」，只读取确认的最新正文，结果进入「回顾」，不修改归属或认知；移动、导出和删除收进「更多操作」。
 
 快捷操作：Ctrl+Enter 保存，中文输入法组合期间不发送；Alt+PageUp 更早记录，Alt+End 最新记录，Esc 关闭菜单或阅读层。两侧可收起，窄窗口资料栏为覆盖层；动效尊重系统减少动效设置。
 
@@ -47,6 +49,8 @@ API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 
 PDF 保留页码，DOCX/文本保留段落；最多提取 100 万字符，显示实际覆盖范围，不宣称读取了完整长文。文字、分段摘要与完整结果分别保存；失败仍可阅读、搜索、打开和另存原文件，重试复用完成分段。无文字、加密和损坏分别提示。本轮不支持扫描件 OCR、图片摘要、应用内录音转写。
 
 回复时明确选择关联资料，才将已读取内容作为参考；资料不自动成为用户认知。原文件按哈希分块备份，换机按需下载并验证，删除资料只清理没有其他引用的文件。
+
+阅读资料时选中文字，可「摘录并记录想法」。逐字引用与自己的理解分别保存，笔记展开后可核对来源，导出分别标记。来源删除后保留自己的正文，旧引用显示已删除。
 
 「系统听写 · Win+H」定位输入框并提示使用，由 [Windows 处理听写](https://support.microsoft.com/en-us/accessibility/windows/use-voice-typing-to-talk-instead-of-type-on-your-pc)，需要网络和麦克风。文字先进入草稿，核对后保存，不自动发送。
 
@@ -75,7 +79,7 @@ npm run dist
 npm run verify:secrets
 ```
 
-日常测试用模拟 AI/WebDAV 和隔离合成资料，没有模型费用。真实验证须明确授权：scripts/live-quality.ts 从本机 DPAPI 读取 key，只发合成任务，最多 80 请求/输入 1M/输出 150K，未知计费保守计入额度。本轮 35 任务结果见 [质量报告](docs/AI-QUALITY-0.4.0.md)。scripts/verify-webdav-v2.ts 只使用唯一隔离子目录验证格式 5 导入、恢复、资料与删除，并清理，不访问日常入口或调用 AI。
+日常测试用模拟 AI/WebDAV 和隔离合成资料，没有模型费用。真实验证须明确授权：scripts/live-quality.ts 从本机 DPAPI 读取 key，只发合成任务，最多 80 请求/输入 1M/输出 150K，未知计费保守计入额度。0.4.0 的 35 任务结果见 [质量报告](docs/AI-QUALITY-0.4.0.md)。scripts/verify-webdav-v2.ts 只使用唯一隔离子目录验证格式 6 导入、恢复、资料与删除，并清理，不访问日常入口或调用 AI。
 
 GitHub Actions 每次 main、codex/** 推送、PR 或手动触发检查、测试并构建。main 通过后自动发布安装包与 SHA256SUMS，标签为 v版本-main.提交前12位；资产核验摘要后正式发布，只有当前 main 头提交标记 Latest。重跑不替换已发布资产。安装包未签名，升级手动安装。
 

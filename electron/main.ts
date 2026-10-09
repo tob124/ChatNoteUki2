@@ -9,6 +9,11 @@ import {
   dialog,
 } from "electron";
 import { researchInputSchema } from "../src/research";
+import {
+  excerptInputSchema,
+  savedQueryInputSchema,
+  selectionInputSchema,
+} from "../src/workspace-tools";
 import { publicUrl } from "./public-source";
 import { join, resolve, sep } from "node:path";
 import {
@@ -431,6 +436,24 @@ function registerIpc() {
   );
   handle("importDetail", (id) => store.importDetail(uuid.parse(id)));
   handle("bootstrap", bootstrap);
+  handle("savedQueries", () => store.savedQueries());
+  handle("saveQuery", (input) =>
+    store.saveQuery(savedQueryInputSchema.parse(input)),
+  );
+  handle("deleteQuery", (id) => store.deleteQuery(uuid.parse(id)));
+  handle("captureExcerpt", (input) => {
+    const id = store.captureExcerpt(excerptInputSchema.parse(input));
+    changed();
+    void ai.pump();
+    return id;
+  });
+  handle("quoteSource", (id) => store.quoteSource(uuid.parse(id)));
+  handle("analyzeSelection", (input) => {
+    const id = ai.queueSelection(selectionInputSchema.parse(input));
+    changed();
+    void ai.pump();
+    return id;
+  });
   handle("workspace", (input) =>
     store.display(
       store.workspace(
@@ -476,6 +499,7 @@ function registerIpc() {
         : z
             .object({
               draft: z.string().max(1000000),
+              savedQueryId: uuid.optional(),
               query: z.string().max(200).optional(),
               searchIn: z.enum(["original", "reply"]).optional(),
               aiFilter: z.enum(["all", "pending", "failed"]).optional(),

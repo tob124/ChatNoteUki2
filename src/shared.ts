@@ -6,6 +6,14 @@ import type {
   ResearchSource,
 } from "./research";
 import type { Material, MaterialSummary } from "./materials";
+import type {
+  SavedQuery,
+  SavedQueryInput,
+  MaterialQuote,
+  ExcerptInput,
+  SelectionInput,
+  QuoteLocator,
+} from "./workspace-tools";
 
 export const stateContentSchema = z.object({
   viewpoint: z.string().max(200000),
@@ -37,6 +45,7 @@ export interface Thread {
   revision?: number;
 }
 export interface Note {
+  materialQuote?: MaterialQuote;
   searchMatches?: {
     kind: "原文" | "标题" | "AI 摘要" | "AI 回应" | "旧版本";
     text: string;
@@ -123,6 +132,7 @@ export interface StructureProposal {
   };
 }
 export interface AiTask {
+  selection?: SelectionInput;
   id: string;
   kind: "organize" | "cognition" | "recap" | "research" | "material";
   materialId?: string;
@@ -154,8 +164,10 @@ export interface AiTask {
   resultBefore?: number;
 }
 export interface Recap {
+  scope?: "selection";
+  question?: string;
   id: string;
-  threadId: string;
+  threadId: string | null;
   createdAt: string;
   start: string;
   end: string;
@@ -191,6 +203,7 @@ export interface WorkspacePage {
   newestSeq: number;
 }
 export interface WorkspaceState {
+  savedQueryId?: string;
   materialIds?: string[];
   query?: string;
   searchIn?: "original" | "reply";
@@ -406,12 +419,24 @@ export const eventSchema = z.object({
     "material.updated",
     "notes.move-batch",
     "notes.undo-move",
+    "query.saved",
+    "query.deleted",
   ]),
   payload: z.unknown(),
   createdAt: z.string().datetime(),
 });
 export type ThoughtEvent = z.infer<typeof eventSchema>;
 export interface UkiApi {
+  savedQueries(): Promise<SavedQuery[]>;
+  saveQuery(input: SavedQueryInput): Promise<string>;
+  deleteQuery(id: string): Promise<void>;
+  captureExcerpt(input: ExcerptInput): Promise<string>;
+  quoteSource(noteId: string): Promise<{
+    quote: MaterialQuote;
+    material: Material | null;
+    current: boolean;
+  }>;
+  analyzeSelection(input: SelectionInput): Promise<string>;
   locateNote(id: string): Promise<number>;
   onFlush(callback: () => Promise<void>): () => void;
   importFiles(noteId?: string): Promise<string[]>;

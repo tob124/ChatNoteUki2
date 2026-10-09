@@ -27,7 +27,7 @@ app
         (r) => trace.push(r),
       );
     const stores: Store[] = [];
-    const dataRoot = resolve(".local", `webdav-format5-${Date.now()}`);
+    const dataRoot = resolve(".local", `webdav-format6-${Date.now()}`);
     mkdirSync(dataRoot, { recursive: true });
     let owned = false;
     const report: Record<string, unknown> = { paidAiCalls: 0 };
@@ -138,6 +138,26 @@ app
       )
         await new Promise((resolve) => setTimeout(resolve, 100));
       assert.equal(local.material(materialId).status, "pending");
+      local.saveQuery({
+        name: "隔离保存查询",
+        workspace: "all",
+        query: "隔离",
+      });
+      const sourceMaterial = local.material(materialId),
+        segment = sourceMaterial.segments[0];
+      const excerptId = local.captureExcerpt({
+        clientId: randomUUID(),
+        raw: "自己的理解与引用分开",
+        threadId: null,
+        quote: {
+          materialId,
+          sha256: sourceMaterial.sha256,
+          segmentId: segment.id,
+          start: 0,
+          end: segment.text.length,
+          text: segment.text,
+        },
+      });
       await sync.backup();
       const start = trace.length;
       await new SyncEngine(local, dav, () => {}, "isolated-v2").sync();
@@ -161,6 +181,9 @@ app
         local.detail(id).revisions,
       );
       report.versionedRestore = true;
+      assert.deepEqual(restored.savedQueries(), local.savedQueries());
+      assert.equal(restored.quoteSource(excerptId).current, true);
+      report.savedQueryAndExcerptRestore = true;
       assert.deepEqual(
         restored.research(researchId),
         local.research(researchId),
@@ -199,9 +222,12 @@ app
       );
       const final = new Store(join(dataRoot, "final", "thoughts.db"));
       stores.push(final);
-      await new SyncEngine(final, dav, () => {}, "final-restore-v5").restore();
+      await new SyncEngine(final, dav, () => {}, "final-restore-v6").restore();
       assert.equal(final.material(materialId).purged, true);
       assert.equal(final.note(id).purged, true);
+      assert.equal(final.note(excerptId).raw, "自己的理解与引用分开");
+      assert.equal(final.quoteSource(excerptId).material, null);
+      assert.equal(final.note(excerptId).materialQuote?.text, "资料已删除");
       assert.ok(!JSON.stringify(final.eventsAfter()).includes(materialText));
       report.permanentDeletionDoesNotRevive = true;
       const manifest = JSON.parse(
@@ -209,8 +235,8 @@ app
           "utf8",
         ),
       );
-      assert.equal(manifest.schemaVersion, 5);
-      report.cloudFormat = 5;
+      assert.equal(manifest.schemaVersion, 6);
+      report.cloudFormat = 6;
     } finally {
       stores.forEach((s) => s.close());
       if (owned) {

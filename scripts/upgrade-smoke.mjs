@@ -62,7 +62,10 @@ await page.evaluate(async () => {
 const before = await page.evaluate(() => window.uki.view());
 const credentials = readFileSync(join(folder, "credentials.json"));
 await app.close();
-const installer = resolve("release/ChatNoteUki-0.4.0-Setup-x64.exe");
+const targetVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
+const installer = resolve(
+  process.argv[2] ?? `release/ChatNoteUki-${targetVersion}-Setup-x64.exe`,
+);
 assert.ok(existsSync(installer));
 const exit = await new Promise((res, rej) => {
   const child = spawn(installer, ["/S"], {
@@ -79,7 +82,7 @@ try {
   await page.getByLabel("写下想法").waitFor();
   const after = await page.evaluate(() => window.uki.view());
   const version = await app.evaluate(({ app }) => app.getVersion());
-  assert.equal(version, "0.4.0");
+  assert.equal(version, targetVersion);
   assert.deepEqual(after.notes, before.notes);
   assert.deepEqual(after.threads, before.threads);
   assert.deepEqual(after.cognitions, before.cognitions);
@@ -91,7 +94,7 @@ try {
   const backupCreated =
     existsSync(join(folder, "backups")) &&
     readdirSync(join(folder, "backups")).some((f) =>
-      f.startsWith("before-0.4.0-"),
+      f.startsWith(`before-${targetVersion}-`),
     );
   if (oldVersion !== version) assert.ok(backupCreated);
   await page.getByLabel("写下想法").fill("升级后的离线记录");

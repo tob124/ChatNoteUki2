@@ -440,15 +440,25 @@ export function RecapContent({
 }) {
   return (
     <article className="recap work-unit" data-unit={value.id}>
-      <span className="eyebrow">引用回顾 · {dateLabel(value.createdAt)}</span>
-      <h2>{threadTitle ? `${threadTitle} · 回顾` : "这段时间的思考"}</h2>
-      {onThread && (
-        <button onClick={() => onThread(value.threadId)}>进入问题</button>
+      <span className="eyebrow">
+        {value.scope === "selection" ? "所选笔记分析" : "引用回顾"} ·{" "}
+        {dateLabel(value.createdAt)}
+      </span>
+      <h2>
+        {value.scope === "selection"
+          ? value.question
+          : threadTitle
+            ? `${threadTitle} · 回顾`
+            : "这段时间的思考"}
+      </h2>
+      {onThread && value.threadId && (
+        <button onClick={() => onThread(value.threadId!)}>进入问题</button>
       )}
       <p className="hint">
-        {dateLabel(value.start)} — {dateLabel(value.end)} · 问题内共{" "}
-        {value.total} 条，实际取样 {value.sampled} 条 · 基础认知 v
-        {value.baseVersion}
+        {dateLabel(value.start)} — {dateLabel(value.end)} ·{" "}
+        {value.scope === "selection"
+          ? `仅所选 ${value.sampled} 条最新正文，不包含其他记录或对话`
+          : `问题内共 ${value.total} 条，实际取样 ${value.sampled} 条 · 基础认知 v${value.baseVersion}`}
       </p>
       <h4>用户明确表达</h4>
       <p>{value.expressed}</p>

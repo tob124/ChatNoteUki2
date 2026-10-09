@@ -632,6 +632,6 @@ describe("idle sync and capability cache", () => {
     expect(restored.snapshot()).toEqual(s.snapshot());
     expect(restored.detail(id).revisions).toEqual(s.detail(id).revisions);
     expect(restored.workspaceState("all").draft).toBe("");
-    expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(5);
+    expect(JSON.parse(dav.files.get("manifest.json")!).schemaVersion).toBe(6);
   });
 });
