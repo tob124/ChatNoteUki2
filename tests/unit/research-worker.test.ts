@@ -53,6 +53,78 @@ const report = () => ({
   limitations: ["观察研究不能确认因果"],
   questions: ["适用对象是否一致？"],
 });
+it("retains long analysis and valid evidence when another item has an invented quote, with partial status replayed", async () => {
+  const s = makeStore(),
+    id = s.capture({ raw: "通勤与幸福感的想法" });
+  s.append("note.failed", { id, error: "mock" });
+  const long = "保留完整分析，不机械截断。".repeat(400);
+  const complete = vi.fn(async () => ({
+    content: JSON.stringify({
+      ...report(),
+      analysis: long,
+      findings: [
+        ...report().findings,
+        { ...report().findings[0], quote: "模型编造的内容并不存在于资料中" },
+        { claim: "缺少其他字段" },
+      ],
+    }),
+    input: 100,
+    output: 80,
+  }));
+  const q = new AiQueue(
+    s,
+    { apiKey: () => "test-key", settings: () => settingsSchema.parse({}) },
+    () => {},
+    { complete },
+    { search: async () => searchResult() },
+    async () => page,
+  );
+  const task = q.queueResearch({
+    noteId: id,
+    threadId: null,
+    question: "通勤的影响是什么",
+    queries: ["通勤 满意度"],
+  });
+  await q.pump();
+  expect(s.task(task).status).toBe("partial");
+  const saved = s.snapshot().researches![0];
+  expect(saved.report.analysis).toBe(long);
+  expect(saved.report.findings).toHaveLength(1);
+  expect(saved.report.warnings).toHaveLength(2);
+  expect(complete).toHaveBeenCalledTimes(1);
+  const restored = makeStore();
+  restored.appendMany(s.eventsAfter().map((r) => r.event));
+  expect(restored.research(saved.id)).toEqual(saved);
+});
+it("does not apply research after its original body changes during generation", async () => {
+  const s = makeStore(),
+    id = s.capture({ raw: "原始通勤想法" });
+  s.append("note.failed", { id, error: "mock" });
+  const q = new AiQueue(
+    s,
+    { apiKey: () => "test-key", settings: () => settingsSchema.parse({}) },
+    () => {},
+    {
+      complete: async () => {
+        s.append("note.corrected", { id, raw: "后来更正的判断" });
+        return { content: JSON.stringify(report()), input: 100, output: 80 };
+      },
+    },
+    { search: async () => searchResult() },
+    async () => page,
+  );
+  const task = q.queueResearch({
+    noteId: id,
+    threadId: null,
+    question: "通勤的影响是什么",
+    queries: ["通勤 满意度"],
+  });
+  await q.pump();
+  expect(s.task(task).status).toBe("failed");
+  expect(s.task(task).error).toContain("更正");
+  expect(s.snapshot().researches).toHaveLength(0);
+  expect(s.note(id).currentRaw).toBe("后来更正的判断");
+});
 it("research task saves exact original versions, sources and result atomically, without changing raw thoughts or cognition", async () => {
   const s = makeStore();
   const id = s.capture({ raw: "我在想通勤时间会怎样影响幸福感" });
@@ -101,9 +173,15 @@ it("research task saves exact original versions, sources and result atomically, 
   expect(saved.sources[0].text).toBe(page.text);
   expect(s.note(id).raw).toBe("我在想通勤时间会怎样影响幸福感");
   expect(s.snapshot().cognitions).toHaveLength(0);
-  expect(s.researchSource(saved.id, saved.sources[0].id)).toEqual(saved.sources[0]);
-  expect(s.researchSource(taskId, saved.sources[0].id)).toEqual(saved.sources[0]);
-  expect(() => s.researchSource(taskId, "b".repeat(24))).toThrow("没有这个来源");
+  expect(s.researchSource(saved.id, saved.sources[0].id)).toEqual(
+    saved.sources[0],
+  );
+  expect(s.researchSource(taskId, saved.sources[0].id)).toEqual(
+    saved.sources[0],
+  );
+  expect(() => s.researchSource(taskId, "b".repeat(24))).toThrow(
+    "没有这个来源",
+  );
   expect(search).toHaveBeenCalledTimes(1);
   expect(read).toHaveBeenCalledTimes(1);
   expect(s.usage().reduce((sum, u) => sum + u.input, 0)).toBe(110);
@@ -203,7 +281,8 @@ it("exhausted daily budget defers a research task before dispatching any search"
     s,
     {
       apiKey: () => "test-key",
-      settings: () => settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000 }),
+      settings: () =>
+        settingsSchema.parse({ hardBudget: true, dailyInputLimit: 8000 }),
     },
     () => {},
     { complete },

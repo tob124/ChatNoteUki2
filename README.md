@@ -1,5 +1,7 @@
 # ChatNoteUki 0.4.0
 
+0.4.0 的 [交付验收](docs/IMPLEMENTATION-0.4.0.md)、[Flownote 代码对照](docs/FLOWNOTE-COMPARISON.md) 与 [下一轮 15 张功能候选卡](docs/NEXT-FEATURE-CANDIDATES.md)。
+
 面向 Windows 10/11 x64 的个人思想工作区。先保存原话，再由 AI 整理标题、分类、摘要与简短回应；离线可以记录。三栏分别承载问题树、笔记与对话、备查资料。记录和 AI 判断明确分开，认知变化须经用户确认。
 
 ## 安装和升级

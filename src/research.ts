@@ -31,16 +31,17 @@ export const researchReportSchema = z.object({
   findings: z
     .array(
       z.object({
-        claim: z.string().trim().min(1).max(500),
+        claim: z.string().trim().min(1).max(100000),
         sourceId: z.string().length(24),
-        quote: z.string().trim().min(10).max(300),
+        quote: z.string().trim().min(10).max(12000),
         relation: z.enum(["support", "challenge", "context"]),
       }),
     )
-    .max(8),
-  analysis: z.string().trim().min(1).max(3000),
-  limitations: z.array(z.string().max(500)).min(1).max(8),
-  questions: z.array(z.string().max(500)).max(5),
+    .max(128),
+  analysis: z.string().trim().min(1).max(100000),
+  limitations: z.array(z.string().max(100000)).min(1).max(128),
+  questions: z.array(z.string().max(100000)).max(128),
+  warnings: z.array(z.string().max(500)).max(128).default([]),
 });
 export type ResearchReport = z.infer<typeof researchReportSchema>;
 export const researchCheckpointSchema = z.object({
@@ -76,6 +77,7 @@ export type Research = z.infer<typeof researchSchema>;
 export function validateResearchReport(
   value: unknown,
   sources: ResearchSource[],
+  allowPartial = false,
 ) {
   const input =
     value && typeof value === "object"
@@ -83,8 +85,38 @@ export function validateResearchReport(
       : {};
   const list = (item: unknown) =>
     typeof item === "string" ? (item.trim() ? [item] : []) : item;
+  const warnings: string[] = Array.isArray(input.warnings)
+    ? input.warnings
+        .filter((v): v is string => typeof v === "string" && v.length <= 500)
+        .slice(0, 128)
+    : [];
+  const findings =
+    allowPartial && Array.isArray(input.findings)
+      ? input.findings.flatMap((value, index) => {
+          const item =
+            researchReportSchema.shape.findings.element.safeParse(value);
+          if (!item.success) {
+            warnings.push(`第 ${index + 1} 项资料依据格式不完整，未采用。`);
+            return [];
+          }
+          const source = sources.find((s) => s.id === item.data.sourceId);
+          if (
+            !source ||
+            source.status !== "read" ||
+            !source.text.includes(item.data.quote)
+          ) {
+            warnings.push(
+              `第 ${index + 1} 项引用未读来源或不存在的原文片段，未采用。`,
+            );
+            return [];
+          }
+          return [item.data];
+        })
+      : input.findings;
   const parsed = researchReportSchema.safeParse({
     ...input,
+    findings,
+    warnings: [...new Set(warnings)].slice(0, 128),
     analysis:
       Array.isArray(input.analysis) &&
       input.analysis.every((v) => typeof v === "string")

@@ -972,7 +972,45 @@ export class AiQueue {
       input: context,
       inputVersions: refs,
     });
+    const bases = task.inputBases ?? {
+      threads: Object.fromEntries(
+        this.store
+          .threads()
+          .filter((t) => t.id === task.threadId)
+          .map((t) => [t.id, t.revision ?? 0]),
+      ),
+      notes: Object.fromEntries(
+        (refs ?? []).map((r) => [
+          r.noteId,
+          this.store.note(r.noteId).assignmentRevision ?? 0,
+        ]),
+      ),
+    };
+    if (!task.inputBases)
+      this.store.append("task.updated", {
+        id: task.id,
+        status: "running",
+        inputBases: bases,
+      });
+    const assertCurrent = () => {
+      controller.signal.throwIfAborted();
+      if (this.store.task(task.id).status === "cancelled")
+        throw new Error("任务已取消，结果未应用");
+      this.store.checkBases(bases);
+      for (const ref of refs ?? []) {
+        const note = this.store.note(ref.noteId);
+        if (note.deletedAt || (note.revision ?? 0) !== ref.revision)
+          throw new Error("任务依据已删除或更正，请重新生成；已完成请求保留");
+      }
+      if (
+        task.threadId &&
+        this.store.cognition(task.threadId).version !==
+          JSON.parse(context).baseVersion
+      )
+        throw new Error("基础认知版本已变化，结果未应用，请重新生成");
+    };
     try {
+      assertCurrent();
       const completed = await runResearch({
         input,
         user: JSON.parse(context),
@@ -1025,7 +1063,7 @@ export class AiQueue {
             throw e;
           }
         },
-        analyze: (instructions, context) =>
+        analyze: (instructions, context, validate) =>
           this.request(
             instructions,
             context,
@@ -1041,8 +1079,10 @@ export class AiQueue {
                 },
                 status: "running",
               }),
+            validate,
           ),
       });
+      assertCurrent();
       const resultId = randomUUID();
       this.store.appendMany([
         this.store.event("research.added", {
@@ -1061,7 +1101,10 @@ export class AiQueue {
         }),
         this.store.event("task.updated", {
           id: task.id,
-          status: "done",
+          status: completed.report.warnings.length ? "partial" : "done",
+          error: completed.report.warnings.length
+            ? completed.report.warnings.join("；")
+            : null,
           result: { resultId },
         }),
       ]);

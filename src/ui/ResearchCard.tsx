@@ -86,6 +86,12 @@ export function ResearchCard({
         <time>{dateLabel(value.createdAt)}</time>
         <h2>{value.question}</h2>
       </header>
+      {!!value.report.warnings?.length && (
+        <p className="error" role="status">
+          部分完成：{value.report.warnings.join("；")}{" "}
+          有效分析和引用已保留，可在任务面板重试。
+        </p>
+      )}
       <div className="research-findings">
         <h3>资料提供的依据</h3>
         {value.report.findings.length ? (

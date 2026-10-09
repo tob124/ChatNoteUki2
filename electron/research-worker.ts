@@ -70,7 +70,11 @@ export async function runResearch(options: {
   search: (query: string) => ReturnType<ResearchSearch["search"]>;
   read: (url: string, signal: AbortSignal) => Promise<PageRead>;
   save: (checkpoint: ResearchCheckpoint) => void;
-  analyze: (instructions: string, context: string) => Promise<unknown>;
+  analyze: (
+    instructions: string,
+    context: string,
+    validate: (value: unknown) => ResearchReport,
+  ) => Promise<unknown>;
 }): Promise<{ checkpoint: ResearchCheckpoint; report: ResearchReport }> {
   const { input, signal } = options;
   let progress = structuredClone(options.checkpoint ?? fresh());
@@ -134,11 +138,6 @@ export async function runResearch(options: {
   if (!context.sources.length)
     throw new Error("当前问题占满分析预算，请缩短问题后重新查找。");
   save("analyze");
-  const result = await options.analyze(
-    researchInstructions,
-    JSON.stringify(context),
-  );
-  signal.throwIfAborted();
   // Validate against only passages actually sent, not unseen portions of fetched pages.
   const used = progress.sources
     .filter((s) => context.sources.some((c) => c.id === s.id))
@@ -146,7 +145,13 @@ export async function runResearch(options: {
       ...s,
       text: context.sources.find((c) => c.id === s.id)!.text,
     }));
-  const report = validateResearchReport(result, used);
+  const result = await options.analyze(
+    researchInstructions,
+    JSON.stringify(context),
+    (value) => validateResearchReport(value, used, true),
+  );
+  signal.throwIfAborted();
+  const report = validateResearchReport(result, used, true);
   validateResearchReport(report, progress.sources);
   save("done");
   return { checkpoint: progress, report };
