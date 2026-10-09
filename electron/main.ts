@@ -11,7 +11,17 @@ import {
 import { researchInputSchema } from "../src/research";
 import { publicUrl } from "./public-source";
 import { join, resolve, sep } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  createWriteStream,
+  renameSync,
+  unlinkSync,
+  existsSync,
+} from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { exportNotes } from "./export-notes";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
@@ -20,6 +30,7 @@ import { Credentials } from "./credentials";
 import { AiQueue, safeAiError } from "./ai";
 import { SyncEngine, WebDav } from "./webdav";
 import { AutoSync } from "./auto-sync";
+import { Materials } from "./materials";
 import {
   settingsSchema,
   stateContentSchema,
@@ -50,7 +61,61 @@ let win: BrowserWindow | null = null;
 let store: Store;
 let credentials: Credentials;
 let ai: AiQueue;
+let materials: Materials;
+let localMaintenanceError = "";
+function maintainLocalCopies() {
+  try {
+    store.maintainLocalCopies();
+    localMaintenanceError = "";
+  } catch {
+    localMaintenanceError = "已删除正文；自动备份清理尚未完成，请重启后重试。";
+  }
+}
 let sync: SyncEngine | null = null;
+let exitReady = false,
+  flushing = false;
+async function flushBeforeExit(done: () => void) {
+  if (flushing) return;
+  if (!win || win.webContents.isDestroyed()) {
+    exitReady = true;
+    done();
+    return;
+  }
+  flushing = true;
+  const id = randomUUID();
+  const error = await new Promise<string | null>((resolveFlush) => {
+    const timer = setTimeout(() => {
+      ipcMain.removeListener("uki:flushed", listener);
+      resolveFlush("无法确认本机草稿保存，请重试或继续编辑");
+    }, 10000);
+    const listener = (
+      event: Electron.IpcMainEvent,
+      requestId: string,
+      error: unknown,
+    ) => {
+      if (event.sender !== win?.webContents || requestId !== id) return;
+      clearTimeout(timer);
+      ipcMain.removeListener("uki:flushed", listener);
+      resolveFlush(error ? "本机草稿保存失败，请重试或继续编辑" : null);
+    };
+    ipcMain.on("uki:flushed", listener);
+    win!.webContents.send("uki:flush", id);
+  });
+  flushing = false;
+  if (error) {
+    const choice = await dialog.showMessageBox(win!, {
+      type: "error",
+      message: error,
+      buttons: ["继续编辑", "重试保存后退出"],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (choice.response === 1) void flushBeforeExit(done);
+    return;
+  }
+  exitReady = true;
+  done();
+}
 const diagnostics: SyncDiagnostic[] = [];
 const automaticSync = new AutoSync(async (kind) => {
   const engine = sync;
@@ -59,6 +124,7 @@ const automaticSync = new AutoSync(async (kind) => {
     if (kind === "full") await engine.sync();
     else if (kind === "restore") await engine.restore();
     else await engine.backup();
+    maintainLocalCopies();
     if (!engine.lastSucceeded) throw new Error(engine.status);
   } finally {
     if (kind !== "backup") void ai.pump();
@@ -115,7 +181,7 @@ function view(): AppView {
     ...store.snapshot(),
     settings: credentials.view(),
     syncStatus: sync?.status ?? "配置坚果云后可导入手机笔记和备份",
-    aiStatus: ai.status,
+    aiStatus: localMaintenanceError || ai.status,
     deviceId: store.getMeta("deviceId")!,
     pendingSync: store.latestSeq() - Number(store.getMeta("syncedSeq") ?? 0),
     canRestore: store.latestSeq() === 0,
@@ -127,7 +193,7 @@ function bootstrap(): Bootstrap {
     counts: store.counts(),
     settings: credentials.view(),
     syncStatus: sync?.status ?? "配置坚果云后同步",
-    aiStatus: ai.status,
+    aiStatus: localMaintenanceError || ai.status,
     deviceId: store.getMeta("deviceId")!,
     pendingSync: store.latestSeq() - Number(store.getMeta("syncedSeq") ?? 0),
     canRestore: store.latestSeq() === 0,
@@ -135,10 +201,13 @@ function bootstrap(): Bootstrap {
     profile,
     version: app.getVersion(),
     diagnostics: [...diagnostics],
-    statistics: JSON.parse(
-      store.getMeta("syncStatistics") ??
-        '{"read":0,"written":0,"lastCheck":null}',
-    ),
+    statistics: {
+      ...JSON.parse(
+        store.getMeta("syncStatistics") ??
+          '{"read":0,"written":0,"lastCheck":null}',
+      ),
+      lastUpload: store.getMeta("lastUploadedAt") ?? null,
+    },
     tasks: store
       .latest<import("../src/shared").AiTask>("tasks", 30)
       .map(({ input, result, checkpoint, candidate, ...task }) => {
@@ -178,6 +247,56 @@ function registerIpc() {
       }
     });
   handle("view", view);
+  handle("locateNote", (id) => store.locateNote(uuid.parse(id)));
+  handle("importFiles", async (note) => {
+    const noteId = uuid.nullable().optional().parse(note) ?? null;
+    const result = await dialog.showOpenDialog(win!, {
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "资料", extensions: ["pdf", "docx", "txt", "md", "markdown"] },
+      ],
+    });
+    return result.canceled ? [] : materials.import(result.filePaths, noteId);
+  });
+  handle("importDropped", (paths, note) =>
+    materials.import(
+      z.array(z.string().min(1).max(32768)).min(1).max(20).parse(paths),
+      uuid.nullable().optional().parse(note) ?? null,
+    ),
+  );
+  handle("materialPage", (query, before, trash, noteId) =>
+    materials.page(
+      z.string().max(500).optional().parse(query),
+      z.number().int().positive().optional().parse(before),
+      z.boolean().optional().parse(trash),
+      uuid.optional().parse(noteId),
+    ),
+  );
+  handle("materialDetail", (id) => materials.detail(uuid.parse(id)));
+  handle("materialAction", async (id, operation) => {
+    await materials.action(
+      uuid.parse(id),
+      z.enum(["retry", "trash", "restore", "purge"]).parse(operation),
+    );
+    ai.interruptCancelled();
+    if (operation === "purge") maintainLocalCopies();
+    changed();
+  });
+  handle("materialOriginal", async (id, saveAs) => {
+    const material = store.material(uuid.parse(id));
+    if (z.boolean().optional().parse(saveAs)) {
+      const selected = await dialog.showSaveDialog(win!, {
+        defaultPath: material.name,
+      });
+      if (!selected.canceled && selected.filePath)
+        await materials.saveOriginal(material.id, selected.filePath);
+    } else {
+      const error = await shell.openPath(
+        await materials.ensureOriginal(material),
+      );
+      if (error) throw new Error("未能打开原文件，请尝试保存原文件后打开");
+    }
+  });
   handle("referenceTitles", (input) =>
     Object.fromEntries(
       z
@@ -200,6 +319,8 @@ function registerIpc() {
     }[z.enum(["trash", "restore", "purge"]).parse(operation)] as
       "note.trashed" | "note.restored" | "note.purged";
     store.appendMany(ids.map((id) => store.event(type, { id })));
+    ai.interruptCancelled();
+    if (operation === "purge") maintainLocalCopies();
     changed();
   });
   handle("bookmark", (id, value) =>
@@ -232,6 +353,26 @@ function registerIpc() {
       content: stateContentSchema.parse(content),
     }),
   );
+  handle("cognitionVersion", (id, version) =>
+    store.display(
+      store.cognitionVersion(
+        uuid.parse(id),
+        z.number().int().positive().parse(version),
+      ),
+    ),
+  );
+  handle("restoreCognition", (id, version, baseVersion) => {
+    const threadId = uuid.parse(id),
+      content = store.cognitionVersion(
+        threadId,
+        z.number().int().positive().parse(version),
+      );
+    store.append("cognition.edited", {
+      threadId,
+      baseVersion: z.number().int().nonnegative().parse(baseVersion),
+      content: stateContentSchema.parse(content),
+    });
+  });
   handle("cancelAi", (id, kind) =>
     ai.cancel(uuid.parse(id), z.enum(["note", "task"]).parse(kind)),
   );
@@ -272,20 +413,17 @@ function registerIpc() {
       ],
     });
     if (selection.canceled || !selection.filePath) return false;
-    const text = notes
-      .map(
-        (n) =>
-          `# ${n.title}\n\n${n.createdAt}\n\n## 用户原文 · v${n.revision ?? 0}\n\n${n.currentRaw ?? n.raw}\n\n${n.synopsis ? "## AI 摘要\n\n" + n.synopsis + "\n\n" : ""}${n.reply ? "## AI 回应\n\n" + n.reply + "\n\n" : ""}` +
-          store
-            .discussions(n.id, 10000)
-            .map(
-              (d) =>
-                `### 用户追问 · 起始正文 v${d.parentRevision ?? 0}\n\n${d.currentRaw ?? d.raw}\n\n${d.reply ? "### AI 回应\n\n" + d.reply : ""}`,
-            )
-            .join("\n\n"),
-      )
-      .join("\n\n---\n\n");
-    writeFileSync(selection.filePath, text, "utf8");
+    const temporary = selection.filePath + ".uki-partial-" + randomUUID();
+    try {
+      await pipeline(
+        Readable.from(exportNotes(store, notes)),
+        createWriteStream(temporary, { encoding: "utf8", flags: "wx" }),
+      );
+      renameSync(temporary, selection.filePath);
+    } catch {
+      if (existsSync(temporary)) unlinkSync(temporary);
+      throw new Error("导出未完成，请选择可写入的路径后重试；本机记录保留");
+    }
     return true;
   });
   handle("dataReport", (before) =>
@@ -337,16 +475,17 @@ function registerIpc() {
         ? undefined
         : z
             .object({
-              draft: z.string().max(50000),
+              draft: z.string().max(1000000),
               query: z.string().max(200).optional(),
               searchIn: z.enum(["original", "reply"]).optional(),
               aiFilter: z.enum(["all", "pending", "failed"]).optional(),
               includeHistory: z.boolean().optional(),
               bookmarked: z.boolean().optional(),
               mode: z.enum(["note", "discussion"]),
+              materialIds: z.array(uuid).max(10).optional(),
               parentNoteId: uuid.nullable(),
               parentRevision: z.number().int().nonnegative().optional(),
-              parentTitle: z.string().max(200).optional(),
+              parentTitle: z.string().max(64000).optional(),
               before: z.number().int().positive().optional(),
               anchor: uuid.optional(),
               anchorOffset: z.number().finite().optional(),
@@ -416,7 +555,7 @@ function registerIpc() {
   handle("title", (id, title, baseTitle) => {
     const note = store.note(uuid.parse(id));
     if (note.deletedAt) throw new Error("笔记已删除，请先恢复");
-    const base = z.string().max(200).optional().parse(baseTitle);
+    const base = z.string().max(64000).optional().parse(baseTitle);
     if (base !== undefined && base !== note.title)
       throw new Error("标题已变化，请核对后重新编辑");
     store.append("note.titled", {
@@ -451,9 +590,28 @@ function registerIpc() {
     if (!task || !["failed", "budget", "partial"].includes(task.status))
       throw new Error("该任务不能重试");
     ai.allowManualRetry(task.id);
+    let resetInput = false;
+    try {
+      if (task.inputBases) store.checkBases(task.inputBases);
+      for (const ref of task.inputVersions ?? []) {
+        const n = store.note(ref.noteId);
+        if (n.deletedAt || (n.revision ?? 0) !== ref.revision)
+          resetInput = true;
+      }
+      if (
+        task.threadId &&
+        task.input &&
+        JSON.parse(task.input).current?.version !==
+          store.cognition(task.threadId).version
+      )
+        resetInput = true;
+    } catch {
+      resetInput = true;
+    }
     store.append("task.updated", {
       id: task.id,
       status: "pending",
+      resetInput,
       error: null,
       ...(task.kind === "research" && task.checkpoint
         ? {
@@ -590,6 +748,12 @@ async function createWindow() {
     (_contents, _permission, callback) => callback(false),
   );
   win.once("ready-to-show", () => win?.show());
+  win.on("close", (event) => {
+    if (!exitReady) {
+      event.preventDefault();
+      void flushBeforeExit(() => win?.close());
+    }
+  });
   win.on("closed", () => {
     win = null;
   });
@@ -614,6 +778,7 @@ else {
       mkdirSync(data, { recursive: true });
       store = new Store(join(data, "thoughts.db"));
       store.reimportRawNotes();
+      maintainLocalCopies();
       store.recoverInterrupted();
       credentials = new Credentials(join(data, "credentials.json"));
       ai = new AiQueue(
@@ -626,6 +791,19 @@ else {
         (id, text) => win?.webContents.send("uki:progress", { id, text }),
       );
       configureSync();
+      materials = new Materials(
+        store,
+        () => credentials.settings().contextTokens,
+        changed,
+        () => {
+          void ai.pump();
+        },
+        async (hash) => {
+          if (!sync) throw new Error("原文件尚未下载，请先配置坚果云");
+          return sync.downloadBlob(hash);
+        },
+      );
+      ai.materialWorker = (task, request) => materials.step(task, request);
       store.onCommitted = () => {
         notify();
         scheduleBackup();
@@ -643,10 +821,16 @@ else {
       Menu.setApplicationMenu(null);
       registerIpc();
       await createWindow();
+      materials.resume();
       void ai.pump();
       if (sync) void automaticSync.run("full").catch(() => {});
       const aiWake = setInterval(() => void ai.pump(), 60000);
-      app.on("before-quit", () => {
+      app.on("before-quit", (event) => {
+        if (!exitReady) {
+          event.preventDefault();
+          void flushBeforeExit(() => app.quit());
+          return;
+        }
         clearInterval(aiWake);
         ai.stop();
       });
@@ -657,7 +841,7 @@ else {
     });
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", () => {
-    automaticSync.stop();
+    if (exitReady) automaticSync.stop();
   });
   app.on("quit", () => store?.close());
 }

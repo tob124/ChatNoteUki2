@@ -181,6 +181,14 @@ export class AiQueue {
   private activeResearch: { id: string; controller: AbortController } | null =
     null;
   status = "等待记录";
+  materialWorker?: (
+    task: AiTask,
+    request: (
+      instructions: string,
+      context: string,
+      validate: (value: unknown) => unknown,
+    ) => Promise<any>,
+  ) => Promise<void>;
   constructor(
     private store: Store,
     private config: AiConfig,
@@ -208,6 +216,11 @@ export class AiQueue {
     this.requests.allowManualRetry(id);
   }
   cancel(id: string, kind: "note" | "task") {
+    if (
+      kind === "task" &&
+      !["pending", "running", "budget"].includes(this.store.task(id).status)
+    )
+      throw new Error("任务已完成或已停止，不能重复取消");
     if (kind === "note") this.store.append("note.cancelled", { id });
     else
       this.store.append("task.updated", {
@@ -218,6 +231,14 @@ export class AiQueue {
     if (this.active?.id === id) this.active.controller.abort();
     if (this.activeResearch?.id === id) this.activeResearch.controller.abort();
     this.changed();
+  }
+  interruptCancelled() {
+    if (!this.active) return;
+    const cancelled =
+      this.active.kind === "note"
+        ? !!this.store.note(this.active.id).deletedAt
+        : this.store.task(this.active.id).status === "cancelled";
+    if (cancelled) this.active.controller.abort();
   }
   private async request(
     instructions: string,
@@ -370,6 +391,40 @@ export class AiQueue {
         parsed.history.shift();
       context = JSON.stringify(parsed);
     }
+    if (n.materialIds?.length && !n.processing) {
+      const parsed = JSON.parse(context);
+      parsed.referenceMaterials = [];
+      for (const id of n.materialIds) {
+        const material = this.store.material(id);
+        if (material.deletedAt)
+          throw new Error("所选参考资料已删除，请重新选择");
+        const selected: any = {
+          id,
+          name: material.name,
+          coverage: material.coverage,
+          role: "用户选择的外部资料，不代表用户立场",
+          segments: [],
+          totalSegments: material.segments.length,
+        };
+        parsed.referenceMaterials.push(selected);
+        for (const segment of material.segments) {
+          selected.segments.push(segment);
+          if (
+            countTokens(JSON.stringify(parsed)) >
+            this.config.settings().contextTokens - 2048
+          ) {
+            selected.segments.pop();
+            break;
+          }
+        }
+        selected.readSegments = selected.segments.length;
+        if (!selected.readSegments)
+          throw new Error(
+            "所选资料无法装入当前上下文，请减少资料或提高容量；回复原文已保留",
+          );
+      }
+      context = JSON.stringify(parsed);
+    }
     this.store.append("note.started", {
       id: n.id,
       input: context,
@@ -442,6 +497,8 @@ export class AiQueue {
     }
     const live = this.store.note(n.id);
     if (live.deletedAt || live.status === "cancelled") return;
+    if (n.materialIds?.some((id) => this.store.material(id).deletedAt))
+      throw new Error("参考资料在生成期间已删除，结果未应用，请重新选择后重试");
     const threadId = n.parentNoteId
       ? this.store.note(n.parentNoteId).threadId
       : live.assignmentLocked
@@ -463,18 +520,23 @@ export class AiQueue {
       result.newThreadTitle &&
       !live.assignmentLocked
     ) {
-      const proposal = this.store.prepareStructure({
-        kind: "create",
-        title: result.newThreadTitle,
-        description: result.threadDescription ?? "",
-        parentId: result.newParentId ?? null,
-        targetId: null,
-        sourceIds: [],
-        noteIds: [n.id],
-        reason: "这些原文暂时没有合适的已有问题，请确认是否建立。",
-        evidence: [{ noteId: n.id, revision: n.revision ?? 0 }],
-      });
-      if (proposal) events.push(proposal);
+      try {
+        const proposal = this.store.prepareStructure({
+          kind: "create",
+          title: result.newThreadTitle,
+          description: result.threadDescription ?? "",
+          parentId: result.newParentId ?? null,
+          targetId: null,
+          sourceIds: [],
+          noteIds: [n.id],
+          reason: "这些原文暂时没有合适的已有问题，请确认是否建立。",
+          evidence: [{ noteId: n.id, revision: n.revision ?? 0 }],
+        });
+        if (proposal) events.push(proposal);
+      } catch {
+        errors.threadId =
+          "分类建议的结构或版本无效；有效文字已保存，笔记保留待整理";
+      }
     }
     this.store.appendMany(events);
   }
@@ -514,21 +576,44 @@ export class AiQueue {
       controller: new AbortController(),
     };
     this.status =
-      task.kind === "research"
-        ? "正在查找外部资料"
-        : task.kind === "organize"
-          ? "AI 正在后台整理历史"
-          : task.kind === "recap"
-            ? "AI 正在生成线程回顾"
-            : "AI 正在检查认知变化";
+      task.kind === "material"
+        ? "AI 正在生成资料摘要"
+        : task.kind === "research"
+          ? "正在查找外部资料"
+          : task.kind === "organize"
+            ? "AI 正在后台整理历史"
+            : task.kind === "recap"
+              ? "AI 正在生成线程回顾"
+              : "AI 正在检查认知变化";
     this.changed();
     try {
+      if (task.kind === "material") {
+        if (!this.materialWorker) throw new Error("附件处理器尚未启动");
+        this.store.append("task.updated", {
+          id: task.id,
+          status: "running",
+          error: null,
+        });
+        await this.materialWorker(task, (instructions, context, validate) =>
+          this.request(
+            instructions,
+            context,
+            "deepseek-flash",
+            16384,
+            undefined,
+            undefined,
+            validate,
+          ),
+        );
+        return;
+      }
       if (task.kind === "research") {
         await this.processResearch(task);
         return;
       }
       const context =
-        task.kind === "organize"
+        task.input ??
+        (task.kind === "organize"
           ? this.organizeContext(task.noteIds.map((id) => this.store.note(id)))
           : buildContext(
               this.store,
@@ -538,8 +623,8 @@ export class AiQueue {
               null,
               true,
               this.config.settings().contextTokens,
-            );
-      const bases = {
+            ));
+      const bases = task.inputBases ?? {
         threads: Object.fromEntries(
           this.store.threads().map((t) => [t.id, t.revision ?? 0]),
         ),
@@ -561,6 +646,27 @@ export class AiQueue {
               noteId: n.id,
               revision: n.revision,
             }));
+      if (!task.inputBases)
+        for (const ref of refs)
+          bases.notes[ref.noteId] =
+            this.store.note(ref.noteId).assignmentRevision ?? 0;
+      const assertCurrent = () => {
+        if (this.store.task(task.id).status === "cancelled")
+          throw new Error("任务已取消，结果未应用");
+        this.store.checkBases(bases);
+        for (const ref of refs) {
+          const live = this.store.note(ref.noteId);
+          if (live.deletedAt || (live.revision ?? 0) !== ref.revision)
+            throw new Error("任务依据已删除或更正，请重新生成；已完成请求保留");
+        }
+        if (
+          task.threadId &&
+          (parsed.current?.version ?? 0) !==
+            this.store.cognition(task.threadId).version
+        )
+          throw new Error("基础认知版本已变化，结果未应用，请重新生成");
+      };
+      assertCurrent();
       this.budget("", context, 16384);
       this.store.append("task.updated", {
         id: task.id,
@@ -568,6 +674,7 @@ export class AiQueue {
         error: null,
         input: context,
         inputVersions: refs,
+        inputBases: bases,
       });
       if (task.kind === "organize") {
         const instructions =
@@ -609,7 +716,7 @@ export class AiQueue {
           return true;
         });
         // A task result and every recommendation commit together, so interrupted replay cannot repeat a billed request.
-        this.store.checkBases(bases);
+        assertCurrent();
         for (const r of refs)
           if (this.store.note(r.noteId).revision !== r.revision)
             throw new Error("整理依据已更正，请重新生成");
@@ -668,10 +775,53 @@ export class AiQueue {
             reason: z.string().max(200000),
             evidenceIds: z.array(z.string().uuid()).min(1).max(20),
           })
-          .parse(await this.request(instructions, context, task.model, 16384));
+          .parse(
+            await this.request(
+              instructions,
+              context,
+              task.model,
+              16384,
+              undefined,
+              undefined,
+              (value) => {
+                const candidate = value as any;
+                const normalize = (item: unknown) =>
+                  Array.isArray(item)
+                    ? item
+                    : typeof item === "string"
+                      ? item.split(/\n+/).filter(Boolean)
+                      : [];
+                const normalized = {
+                  ...candidate,
+                  after: {
+                    ...candidate?.after,
+                    reasons: normalize(candidate?.after?.reasons),
+                    uncertainties: normalize(candidate?.after?.uncertainties),
+                    questions: normalize(candidate?.after?.questions),
+                    decisions: normalize(candidate?.after?.decisions),
+                  },
+                };
+                const result = z
+                  .object({
+                    after: stateContentSchema,
+                    reason: z.string().max(200000),
+                    evidenceIds: z.array(z.string().uuid()).min(1).max(30),
+                  })
+                  .parse(normalized);
+                if (
+                  result.evidenceIds.some(
+                    (id) => !refs.some((r) => r.noteId === id),
+                  )
+                )
+                  throw new Error("认知建议引用超出上下文");
+                return result;
+              },
+            ),
+          );
         if (result.evidenceIds.some((id) => !refs.some((r) => r.noteId === id)))
           throw new Error("AI 引用了上下文之外的历史");
         const current = parsed.current;
+        assertCurrent();
         const before: StateContent = {
           viewpoint: current.viewpoint,
           reasons: current.reasons,
@@ -700,18 +850,21 @@ export class AiQueue {
           }),
         ]);
       } else {
-        const result = parseRecapResult(
-          await this.request(
-            recapInstructions,
-            context,
-            task.model,
-            16384,
-            undefined,
-            undefined,
-            (value) => parseRecapResult(value, refs),
-          ),
-          refs,
-        );
+        const result = (await this.request(
+          recapInstructions,
+          context,
+          task.model,
+          16384,
+          undefined,
+          undefined,
+          (value) => {
+            const result = parseRecapResult(value, refs);
+            if (result.warnings.length)
+              throw new PartialResultError(result.warnings.join("；"), result);
+            return result;
+          },
+        )) as ReturnType<typeof parseRecapResult>;
+        assertCurrent();
         const times = parsed.history.map((n: any) => n.createdAt).sort();
         if (!times.length) throw new Error("没有可回顾的原文");
         const resultId = randomUUID();
@@ -732,13 +885,19 @@ export class AiQueue {
           }),
           this.store.event("task.updated", {
             id: task.id,
-            status: "done",
+            status: result.warnings.length ? "partial" : "done",
+            error: result.warnings.length ? result.warnings.join("；") : null,
             result: { ...result, resultId },
           }),
         ]);
       }
     } catch (e) {
       if (this.store.task(task.id).status === "cancelled") return;
+      if (task.kind === "material" && task.materialId)
+        this.store.append("material.updated", {
+          id: task.materialId,
+          value: { status: "failed", error: safeAiError(e) },
+        });
       this.store.append("task.updated", {
         id: task.id,
         status: e instanceof BudgetError ? "budget" : "failed",

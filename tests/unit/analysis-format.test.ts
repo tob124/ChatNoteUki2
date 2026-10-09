@@ -30,6 +30,7 @@ it("accepts text or text lists in recap sections, resolves unique reference pref
     possible: "",
     questions: "还需要什么证据？",
     evidenceIds: [id],
+    warnings: [],
   });
 });
 it("rejects fabricated, ambiguous and missing recap evidence and reports only field names", () => {
@@ -88,7 +89,12 @@ it("normalizes empty optional note metadata and preserves complete generated tit
     parseNoteResult({ title: "标题", synopsis: "", reply: null }, n),
   ).toThrow("回应");
   const long = s.createNote({ raw: "中文".repeat(100) });
-  expect(parseNoteResult({ title: "标题", synopsis: "摘要".repeat(60), reply: "回应" },long).synopsis).toBe("摘要".repeat(60));
+  expect(
+    parseNoteResult(
+      { title: "标题", synopsis: "摘要".repeat(60), reply: "回应" },
+      long,
+    ).synopsis,
+  ).toBe("摘要".repeat(60));
 });
 it.each([
   { content: "", finishReason: "stop", error: "空内容" },

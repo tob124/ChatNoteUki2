@@ -2,12 +2,13 @@
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { Credentials } from "../electron/credentials";
 import { Store } from "../electron/store";
 import { SyncEngine, WebDav } from "../electron/webdav";
 import type { SyncDiagnostic } from "../src/shared";
+import { Materials } from "../electron/materials";
 app
   .whenReady()
   .then(async () => {
@@ -26,6 +27,8 @@ app
         (r) => trace.push(r),
       );
     const stores: Store[] = [];
+    const dataRoot = resolve(".local", `webdav-format5-${Date.now()}`);
+    mkdirSync(dataRoot, { recursive: true });
     let owned = false;
     const report: Record<string, unknown> = { paidAiCalls: 0 };
     try {
@@ -37,7 +40,7 @@ app
         "\uFEFF隔离验收第一条\r\n\r\n第二条\n\n第二条",
         { "If-None-Match": "*" },
       );
-      const local = new Store(":memory:");
+      const local = new Store(join(dataRoot, "thoughts.db"));
       stores.push(local);
       const sync = new SyncEngine(local, dav, () => {}, "isolated-v2");
       await sync.sync();
@@ -116,6 +119,25 @@ app
         parentRevision: 1,
         researchId,
       });
+      const materialText =
+        "隔离合成附件资料，仅验证提取、文件同步、恢复与清理。";
+      const materialFile = join(dataRoot, "合成资料.txt");
+      writeFileSync(materialFile, materialText, "utf8");
+      const materialService = new Materials(
+        local,
+        () => 32768,
+        () => {},
+        () => {},
+        (hash) => sync.downloadBlob(hash),
+      );
+      const [materialId] = await materialService.import([materialFile], id);
+      const deadline = Date.now() + 20000;
+      while (
+        local.material(materialId).status === "extracting" &&
+        Date.now() < deadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(local.material(materialId).status, "pending");
       await sync.backup();
       const start = trace.length;
       await new SyncEngine(local, dav, () => {}, "isolated-v2").sync();
@@ -124,9 +146,15 @@ app
       assert.ok(idle.every((r) => r.method === "GET"));
       report.idleReads = idle.length;
       report.idleWrites = 0;
-      const restored = new Store(":memory:");
+      const restored = new Store(join(dataRoot, "restored", "thoughts.db"));
       stores.push(restored);
-      await new SyncEngine(restored, dav, () => {}, "restore-v2").restore();
+      const restoredSync = new SyncEngine(
+        restored,
+        dav,
+        () => {},
+        "restore-v2",
+      );
+      await restoredSync.restore();
       assert.deepEqual(restored.snapshot(), local.snapshot());
       assert.deepEqual(
         restored.detail(id).revisions,
@@ -139,13 +167,50 @@ app
       );
       assert.equal(restored.detail(id).discussions[0].researchId, researchId);
       report.researchAndDiscussionRestore = true;
+      assert.deepEqual(
+        restored.material(materialId),
+        local.material(materialId),
+      );
+      const restoredMaterials = new Materials(
+        restored,
+        () => 32768,
+        () => {},
+        () => {},
+        (hash) => restoredSync.downloadBlob(hash),
+      );
+      assert.equal(
+        readFileSync(
+          await restoredMaterials.ensureOriginal(restored.material(materialId)),
+          "utf8",
+        ),
+        materialText,
+      );
+      report.materialFileAndTextRestore = true;
+      const deletedHash = restored.material(materialId).chunks[0].sha256;
+      await restoredMaterials.action(materialId, "trash");
+      await restoredMaterials.action(materialId, "purge");
+      restored.append("note.trashed", { id });
+      restored.append("note.purged", { id });
+      await restoredSync.backup();
+      assert.equal(restoredSync.lastSucceeded, true);
+      assert.equal(
+        (await dav.request("GET", `blobs/${deletedHash}.bin`)).status,
+        404,
+      );
+      const final = new Store(join(dataRoot, "final", "thoughts.db"));
+      stores.push(final);
+      await new SyncEngine(final, dav, () => {}, "final-restore-v5").restore();
+      assert.equal(final.material(materialId).purged, true);
+      assert.equal(final.note(id).purged, true);
+      assert.ok(!JSON.stringify(final.eventsAfter()).includes(materialText));
+      report.permanentDeletionDoesNotRevive = true;
       const manifest = JSON.parse(
         Buffer.from((await dav.request("GET", "manifest.json")).body).toString(
           "utf8",
         ),
       );
       assert.equal(manifest.schemaVersion, 5);
-      report.cloudFormat = 4;
+      report.cloudFormat = 5;
     } finally {
       stores.forEach((s) => s.close());
       if (owned) {

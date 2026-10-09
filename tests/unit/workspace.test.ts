@@ -334,7 +334,7 @@ describe("versioned library and workspace", () => {
         reply: "AI 独有词汇",
       },
     });
-    expect(s.workspace({ workspace: t }).items).toHaveLength(2);
+    expect(s.workspace({ workspace: t }).items).toHaveLength(1);
     expect(s.detail(id).discussions).toHaveLength(1);
     expect(
       s.workspace({ workspace: "all", query: "独有词汇", searchIn: "original" })

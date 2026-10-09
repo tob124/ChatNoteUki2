@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { Material } from "../src/materials";
 import { z } from "zod";
 import type { Settings, ThoughtEvent } from "../src/shared";
 import { decodeInbox, observeInbox } from "./inbox";
@@ -183,7 +186,8 @@ const eventFileSchema = z.object({
 });
 const text = (r: DavResponse) =>
   new TextDecoder("utf-8", { fatal: true }).decode(r.body);
-const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+const hash = (s: string | Uint8Array) =>
+  createHash("sha256").update(s).digest("hex");
 export const strongEtag = (etag: string | null): etag is string =>
   !!etag && /^"[^"\r\n]*"$/.test(etag);
 const ok = (r: DavResponse, action: string) => {
@@ -362,6 +366,49 @@ export class SyncEngine {
   }): Promise<{ value: Manifest; etag: string }> {
     const localSeq = Number(this.store.getMeta("syncedSeq") ?? 0);
     const rows = this.store.eventsAfter(localSeq);
+    const materialIds = new Set(
+      rows
+        .filter((r) => r.event.type === "material.updated")
+        .map((r) => String((r.event.payload as any).id)),
+    );
+    const pendingMaterials = [...materialIds]
+      .map((id) => this.store.material(id))
+      .filter((m) => !m.purged);
+    const blobCache = this.cacheId + ":blob:";
+    const uploads = pendingMaterials
+      .flatMap((m) => m.chunks)
+      .filter((c) => !this.store.getMeta(blobCache + c.sha256));
+    if (uploads.length) {
+      const directory = await this.dav.request("MKCOL", "blobs");
+      if (![201, 405].includes(directory.status))
+        throw new Error("创建资料文件目录失败");
+      for (const chunk of new Map(uploads.map((c) => [c.sha256, c])).values()) {
+        const path = `blobs/${chunk.sha256}.bin`;
+        const local = join(
+          dirname(this.store.path),
+          "materials",
+          "blobs",
+          chunk.sha256 + ".bin",
+        );
+        if (existsSync(local)) {
+          const body = readFileSync(local);
+          if (body.length !== chunk.bytes || hash(body) !== chunk.sha256)
+            throw new Error("本机资料文件块校验失败，未上传");
+          const put = await this.dav.request("PUT", path, body, {
+            "If-None-Match": "*",
+          });
+          if (put.status !== 412) ok(put, "上传资料文件块");
+        }
+        const checked = await this.dav.request("GET", path);
+        ok(checked, "核对资料文件块");
+        if (
+          checked.body.length !== chunk.bytes ||
+          hash(checked.body) !== chunk.sha256
+        )
+          throw new Error("云端资料文件块校验失败，未发布资料");
+        this.store.setMeta(blobCache + chunk.sha256, "1");
+      }
+    }
     const batches = [...(remote.value?.batches ?? [])];
     if (
       remote.value &&
@@ -444,11 +491,21 @@ export class SyncEngine {
       throw new Error("恢复清单发布结果无法确认，保留待同步任务");
     }
     this.store.setMeta("syncedSeq", String(rows.at(-1)?.seq ?? localSeq));
+    if (rows.length)
+      this.store.setMeta("lastUploadedAt", new Date().toISOString());
     this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
     return this.maintainPurges({ value: next, etag: verify.etag });
   }
   private archivePath(batch: import("../src/shared").InboxBatch) {
     return `imports/${batch.id}${batch.redacted ? "-redacted-" + hash(batch.snapshot).slice(0, 16) : ""}.txt`;
+  }
+  async downloadBlob(hashValue: string): Promise<Uint8Array> {
+    if (!/^[a-f0-9]{64}$/.test(hashValue)) throw new Error("无效文件引用");
+    const response = await this.dav.request("GET", `blobs/${hashValue}.bin`);
+    ok(response, "下载资料文件块");
+    if (hash(response.body) !== hashValue)
+      throw new Error("下载的资料文件块校验失败");
+    return response.body;
   }
   private async maintainPurges(remote: {
     value: Manifest;
@@ -542,9 +599,23 @@ export class SyncEngine {
       )
         throw new Error("删除维护发布结果待核对，原文件尚未清理");
       remote = { value: next, etag: confirmed.etag };
+      this.store.setMeta("lastUploadedAt", new Date().toISOString());
       this.store.setMeta("manifestHash", hash(JSON.stringify(next)));
     }
     // Never delete anything still referenced by the confirmed manifest.
+    const materials = this.store.all<Material>("materials");
+    const referenced = new Set(
+      materials
+        .filter((m) => !m.purged)
+        .flatMap((m) => m.chunks.map((c) => c.sha256)),
+    );
+    for (const chunk of materials
+      .filter((m) => m.purged)
+      .flatMap((m) => m.chunks)) {
+      if (!referenced.has(chunk.sha256))
+        garbage.add(`blobs/${chunk.sha256}.bin`);
+    }
+    remember();
     for (const file of garbage) {
       if (remote.value.batches.some((b) => b.file === file)) continue;
       const old = await this.dav.request("GET", file);
@@ -558,6 +629,8 @@ export class SyncEngine {
         if (removed.status !== 404) ok(removed, "清理已替代旧批次");
       }
       garbage.delete(file);
+      if (file.startsWith("blobs/"))
+        this.store.setMeta(this.cacheId + ":blob:" + file.slice(6, -4), "");
       remember();
     }
     if (!garbage.size) this.store.setMeta("purgePending", "");

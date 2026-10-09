@@ -1,6 +1,49 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { UkiApi } from "../src/shared";
+const localWrites = new Map<string, Promise<unknown>>();
+const flushers = new Set<() => Promise<void>>();
+ipcRenderer.on("uki:flush", async (_event, id: string) => {
+  try {
+    await Promise.all([...flushers].map((fn) => fn()));
+    for (let pass = 0; pass < 10; pass++) {
+      const snapshot = new Map(localWrites);
+      await Promise.all(snapshot.values());
+      if (
+        [...localWrites].every(
+          ([key, promise]) => snapshot.get(key) === promise,
+        )
+      ) {
+        ipcRenderer.send("uki:flushed", id, null);
+        return;
+      }
+    }
+    throw new Error("草稿仍在更新，请停止输入后重试");
+  } catch {
+    ipcRenderer.send("uki:flushed", id, "本机草稿保存未完成，请重试或继续编辑");
+  }
+});
 const api: UkiApi = {
+  locateNote: (id) => ipcRenderer.invoke("uki:locateNote", id),
+  onFlush: (callback) => {
+    flushers.add(callback);
+    return () => {
+      flushers.delete(callback);
+    };
+  },
+  importFiles: (noteId) => ipcRenderer.invoke("uki:importFiles", noteId),
+  importDropped: (files, noteId) =>
+    ipcRenderer.invoke(
+      "uki:importDropped",
+      files.map((file) => webUtils.getPathForFile(file)),
+      noteId,
+    ),
+  materialPage: (query, before, trash, noteId) =>
+    ipcRenderer.invoke("uki:materialPage", query, before, trash, noteId),
+  materialDetail: (id) => ipcRenderer.invoke("uki:materialDetail", id),
+  materialOriginal: (id, saveAs) =>
+    ipcRenderer.invoke("uki:materialOriginal", id, saveAs),
+  materialAction: (id, operation) =>
+    ipcRenderer.invoke("uki:materialAction", id, operation),
   onProgress: (callback) => {
     const listener = (
       _event: unknown,
@@ -18,6 +61,10 @@ const api: UkiApi = {
     ipcRenderer.invoke("uki:conversations", id, before),
   editCognition: (id, version, content) =>
     ipcRenderer.invoke("uki:editCognition", id, version, content),
+  cognitionVersion: (id, version) =>
+    ipcRenderer.invoke("uki:cognitionVersion", id, version),
+  restoreCognition: (id, version, base) =>
+    ipcRenderer.invoke("uki:restoreCognition", id, version, base),
   cancelAi: (id, kind) => ipcRenderer.invoke("uki:cancelAi", id, kind),
   taskDetail: (id) => ipcRenderer.invoke("uki:taskDetail", id),
   exportNotes: (ids, threadId) =>
@@ -37,8 +84,11 @@ const api: UkiApi = {
   workspace: (query) => ipcRenderer.invoke("uki:workspace", query),
   detail: (id) => ipcRenderer.invoke("uki:detail", id),
   resources: (id) => ipcRenderer.invoke("uki:resources", id),
-  workspaceState: (key, value) =>
-    ipcRenderer.invoke("uki:workspaceState", key, value),
+  workspaceState: (key, value) => {
+    const request = ipcRenderer.invoke("uki:workspaceState", key, value);
+    if (value !== undefined) localWrites.set(key, request);
+    return request;
+  },
   preferences: (value) => ipcRenderer.invoke("uki:preferences", value),
   thread: (input) => ipcRenderer.invoke("uki:thread", input),
   correct: (id, raw, version) =>

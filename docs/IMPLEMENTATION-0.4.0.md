@@ -1,22 +1,15 @@
-# 0.4.0 implementation checkpoint
+# ChatNoteUki 0.4.0 交付检查
 
-Development is on main. This checkpoint is not the 0.4.0 release. Existing data and credentials are preserved; upgrades do not repeat raw-note reentry.
+开发分支 main。升级保留资料、人工修改、草稿及 DPAPI 凭据，不重复原文重导。
 
-Implemented foundation:
+已实现 Responses 结构输出、流式讨论、官方 tokenizer、默认 32K 输入、软提醒预算、响应持久化缓存、有限修复重试、分项完成、版本保护及任务面板；回收站、收藏、置顶、批量移动与撤销、手动认知及版本恢复；历史正文检索、引用定位返回、对话分页、编辑草稿与退出保存；独立文档提取、中文检索、分段摘要、显式参考、原文件同步恢复；Windows 听写提示及克制动效。
 
-- Responses JSON Schema, plain streaming discussion, bundled official offline tokenizers, soft daily thresholds and optional hard limits.
-- Durable returned-response caches before parsing; bounded repair, truncation regeneration and provider retry; partial note metadata and individually validated structure recommendations.
-- Version guards, cancellation, trash, restore, selective permanent deletion, bookmark, thread pin, batch move/undo and manual cognition versions.
-- Cloud format 5 reading formats 1–4. Deletion maintenance creates replacement batches, conditionally publishes and confirms the manifest, then deletes superseded files. Import digests retain cycle/position deduplication after text removal.
-- Card menus, local editor drafts, explicit historical search, conversation pagination, tasks panel, human-readable evidence titles, separate local save feedback and Windows dictation instructions.
+云端格式 5 读取 1–4。彻底删除维护任务替换共享批次，条件发布并确认后清理旧文件。重导前对应原文及自动数据库备份一并清理，其他笔记、分析、导入凭据和用量保留。
 
-Latest completed validation before this checkpoint: 121 unit tests, type checking, production build and 8 Electron desktop regression flows. No new paid AI requests or daily-data WebDAV requests have been made.
+真实 Flash：35 个合成任务、36 请求，首次完整完成率 97.14%，最终 100%，输入 74,605 / 输出 14,343 tokens，见 [质量报告](AI-QUALITY-0.4.0.md)。样本不代表所有实际场景。
 
-Remaining before release:
+坚果云隔离验证：格式 5 顺序导入、条件清空、资料文件文字恢复、研究讨论恢复、永久删除恢复通过；空闲检查 2 读/0 写，测试目录清理。没有访问日常入口或调用 AI。
 
-- Complete navigation restoration, draft/exit handshake, approval drafts and inline error/busy coverage; add dedicated UX acceptance flows.
-- Complete provider result recovery/usage reconciliation, long-material step scheduling and the required synthetic Flash quality report.
-- Implement isolated PDF/DOCX/text extraction, material indexing, summaries/checkpoints, blob sync and restore/open/delete lifecycle.
-- Expand deletion interruption/conflict tests and run isolated Nutstore integration.
-- Visual/keyboard/reduced-motion verification, packaged install upgrade tests, credentials scan and Windows CI.
-- Bump version, publish via existing Actions, verify installer. Only after delivery: research at least 12 tools and produce 10–15 feature cards.
+安装验收和下一轮调研完成后补充。原始报告、资料库、响应缓存、凭据仅留在 Git 忽略的本机目录，日常验收用模拟接口和隔离资料。
+
+本机验收（2026-10-09）：129 项单元测试、10 条 Electron 桌面完整流程、9 项发布脚本测试、类型检查通过。实际打包程序中文多页 PDF/DOCX/文本、原文件保存、附件重启及 sandbox/contextIsolation 通过；真实安装从 0.3.0 升级到 0.4.0，正文、人工字段、认知和 DPAPI 凭据保留，升级前备份、离线记录和草稿重启恢复通过。所有安装验收使用隔离合成资料。Windows CI 和自动 Release 发布在推送后核对。

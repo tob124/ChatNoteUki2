@@ -13,9 +13,11 @@ const states: Record<string, string> = {
 export function TaskPanel({
   onClose,
   onAction,
+  onOpen,
 }: {
   onClose(): void;
   onAction: Action;
+  onOpen?(id: string, kind: "note" | "task"): void;
 }) {
   const ref = useRef<HTMLDialogElement>(null),
     [rows, setRows] = useState<Awaited<ReturnType<UkiApi["aiTasks"]>>>([]),
@@ -67,6 +69,7 @@ export function TaskPanel({
                             d.note.title,
                             d.note.synopsis,
                             d.note.reply,
+                            d.note.partialReply,
                             ...Object.values(d.note.componentErrors ?? {}),
                           ]
                             .filter(Boolean)
@@ -86,6 +89,11 @@ export function TaskPanel({
                 >
                   查看结果与失败步骤
                 </button>
+                {onOpen && (
+                  <button onClick={() => onOpen(row.id, row.kind)}>
+                    查看对象
+                  </button>
+                )}
                 {["pending", "running", "budget"].includes(row.status) && (
                   <button
                     onClick={() =>

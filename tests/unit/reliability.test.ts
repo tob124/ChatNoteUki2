@@ -186,7 +186,7 @@ it("trash excludes whole conversations, restore preserves cancelled status, and 
   expect(s.recent(null)).toHaveLength(0);
   s.append("note.restored", { id });
   expect(s.note(id).status).toBe("cancelled");
-  expect(s.counts().notes).toBe(2);
+  expect(s.counts().notes).toBe(1);
 });
 it("manual cognition and batch undo reject stale versions", () => {
   const s = open(),

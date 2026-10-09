@@ -5,6 +5,7 @@ import type {
   Research,
   ResearchSource,
 } from "./research";
+import type { Material, MaterialSummary } from "./materials";
 
 export const stateContentSchema = z.object({
   viewpoint: z.string().max(200000),
@@ -36,11 +37,17 @@ export interface Thread {
   revision?: number;
 }
 export interface Note {
+  searchMatches?: {
+    kind: "原文" | "标题" | "AI 摘要" | "AI 回应" | "旧版本";
+    text: string;
+    revision?: number;
+  }[];
   partialReply?: string;
   deletedAt?: string | null;
   purged?: boolean;
   bookmarked?: boolean;
   componentErrors?: Record<string, string>;
+  materialIds?: string[];
   researchId?: string;
   id: string;
   raw: string;
@@ -117,7 +124,9 @@ export interface StructureProposal {
 }
 export interface AiTask {
   id: string;
-  kind: "organize" | "cognition" | "recap" | "research";
+  kind: "organize" | "cognition" | "recap" | "research" | "material";
+  materialId?: string;
+  inputBases?: StructureProposal["bases"];
   noteIds: string[];
   threadId: string | null;
   model: Note["model"];
@@ -182,6 +191,7 @@ export interface WorkspacePage {
   newestSeq: number;
 }
 export interface WorkspaceState {
+  materialIds?: string[];
   query?: string;
   searchIn?: "original" | "reply";
   aiFilter?: "all" | "pending" | "failed";
@@ -228,7 +238,12 @@ export interface Bootstrap {
   version: string;
   diagnostics: SyncDiagnostic[];
   tasks: AiTask[];
-  statistics: { read: number; written: number; lastCheck: string | null };
+  statistics: {
+    read: number;
+    written: number;
+    lastCheck: string | null;
+    lastUpload?: string | null;
+  };
 }
 export interface ThreadResources {
   thread: Thread | null;
@@ -317,6 +332,8 @@ export interface AppView extends Snapshot {
 }
 export const captureSchema = z
   .object({
+    clientId: z.string().uuid().optional(),
+    materialIds: z.array(z.string().uuid()).max(10).optional(),
     researchId: z.string().uuid().optional(),
     raw: z
       .string()
@@ -395,6 +412,24 @@ export const eventSchema = z.object({
 });
 export type ThoughtEvent = z.infer<typeof eventSchema>;
 export interface UkiApi {
+  locateNote(id: string): Promise<number>;
+  onFlush(callback: () => Promise<void>): () => void;
+  importFiles(noteId?: string): Promise<string[]>;
+  importDropped(files: File[], noteId?: string): Promise<string[]>;
+  materialPage(
+    query?: string,
+    before?: number,
+    trash?: boolean,
+    noteId?: string,
+  ): Promise<{ items: MaterialSummary[]; before: number | null }>;
+  materialDetail(
+    id: string,
+  ): Promise<Material & { originalAvailable: boolean }>;
+  materialOriginal(id: string, saveAs?: boolean): Promise<void>;
+  materialAction(
+    id: string,
+    operation: "retry" | "trash" | "restore" | "purge",
+  ): Promise<void>;
   onProgress(
     callback: (progress: { id: string; text: string }) => void,
   ): () => void;
@@ -420,6 +455,12 @@ export interface UkiApi {
     threadId: string,
     baseVersion: number,
     content: StateContent,
+  ): Promise<void>;
+  cognitionVersion(threadId: string, version: number): Promise<Cognition>;
+  restoreCognition(
+    threadId: string,
+    version: number,
+    baseVersion: number,
   ): Promise<void>;
   cancelAi(id: string, kind: "note" | "task"): Promise<void>;
   taskDetail(id: string): Promise<AiTask>;

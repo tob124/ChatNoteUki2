@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Cognition, StateContent } from "../shared";
+import {
+  stateContentSchema,
+  type Cognition,
+  type StateContent,
+} from "../shared";
 import type { Action } from "./RecordCard";
 const groups = [
   ["reasons", "主要理由"],
@@ -24,20 +28,28 @@ export function CognitionEditor({
   const key = "cognition:" + value.threadId;
   useEffect(() => {
     let active = true;
-    void window.uki.workspaceState(key).then((saved) => {
-      if (!active) return;
-      if (saved.draft) {
-        try {
-          setDraft(JSON.parse(saved.draft));
-          setBase(saved.parentRevision ?? value.version);
-          if (saved.parentRevision !== value.version)
-            setError("草稿基于旧认知版本，请核对并重新编辑后保存。");
-        } catch {
-          setError("草稿无法读取，请核对后重新编辑。");
+    void window.uki
+      .workspaceState(key)
+      .then((saved) => {
+        if (!active) return;
+        if (saved.draft) {
+          try {
+            setDraft(stateContentSchema.parse(JSON.parse(saved.draft)));
+            setBase(saved.parentRevision ?? value.version);
+            if (saved.parentRevision !== value.version)
+              setError("草稿基于旧认知版本，请核对并重新编辑后保存。");
+          } catch {
+            setError("草稿无法读取，请核对后重新编辑。");
+          }
         }
-      }
-      setReady(true);
-    });
+        setReady(true);
+      })
+      .catch((e) => {
+        if (active) {
+          setError(e.message);
+          setReady(true);
+        }
+      });
     return () => {
       active = false;
     };
@@ -86,6 +98,7 @@ export function CognitionEditor({
       <label>
         当前看法
         <textarea
+          aria-label="当前看法"
           disabled={!ready || busy}
           value={draft.viewpoint}
           onChange={(e) => update({ ...draft, viewpoint: e.target.value })}
@@ -95,6 +108,7 @@ export function CognitionEditor({
         <label key={field}>
           {label}（每行一项）
           <textarea
+            aria-label={label + "（每行一项）"}
             disabled={!ready || busy}
             value={draft[field].join("\n")}
             onChange={(e) =>

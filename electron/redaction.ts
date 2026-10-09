@@ -28,6 +28,14 @@ export function redactEvent(
   ids: Set<string>,
 ): ThoughtEvent {
   const p = event.payload as any;
+  if (event.type === "material.updated" && ids.has(p.id)) {
+    const value = { ...p.value };
+    if ("segments" in value) value.segments = [];
+    if ("summary" in value) value.summary = "";
+    if ("summaries" in value) value.summaries = [];
+    if ("synthesis" in value) value.synthesis = [];
+    return { ...event, payload: { ...p, value } };
+  }
   if (event.type === "inbox.observed" || event.type === "inbox.conflict")
     return { ...event, payload: redactBatch(p, ids) };
   if (event.type === "note.added" && ids.has(p.id))

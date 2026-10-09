@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { stateContentSchema } from "../shared";
 import type {
   Evidence,
   Proposal,
@@ -79,6 +80,68 @@ export function CognitionSuggestion({
 }) {
   const [edit, setEdit] = useState(false),
     [draft, setDraft] = useState(value.after);
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const draftKey = "proposal:" + value.id;
+  useEffect(() => {
+    let active = true;
+    void window.uki
+      .workspaceState(draftKey)
+      .then((saved) => {
+        if (active && saved.draft) {
+          try {
+            setDraft(stateContentSchema.parse(JSON.parse(saved.draft)));
+            setEdit(true);
+            if (saved.parentRevision !== value.baseVersion)
+              setError("草稿基于旧建议版本，请核对后重新编辑");
+          } catch {
+            setError("草稿格式有误，请核对后重新编辑");
+          }
+        }
+      })
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [draftKey]);
+  const update = (next: StateContent) => {
+    setDraft(next);
+    void window.uki
+      .workspaceState(draftKey, {
+        draft: JSON.stringify(next),
+        mode: "note",
+        parentNoteId: null,
+        parentRevision: value.baseVersion,
+        openIds: [],
+      })
+      .catch((e) => setError(e.message));
+  };
+  const resolve = (decision: "accept" | "reject") => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    onAction(async () => {
+      try {
+        await window.uki.resolve(
+          value.id,
+          decision,
+          decision === "accept" && edit ? draft : undefined,
+        );
+        await window.uki.workspaceState(draftKey, {
+          draft: "",
+          mode: "note",
+          parentNoteId: null,
+          openIds: [],
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
   const stale = version !== undefined && version !== value.baseVersion;
   if (value.status !== "pending")
     return (
@@ -111,9 +174,9 @@ export function CognitionSuggestion({
                 当前看法
                 <textarea
                   value={draft.viewpoint}
-                  maxLength={2000}
+                  maxLength={200000}
                   onChange={(e) =>
-                    setDraft({ ...draft, viewpoint: e.target.value })
+                    update({ ...draft, viewpoint: e.target.value })
                   }
                 />
               </label>
@@ -123,7 +186,7 @@ export function CognitionSuggestion({
                   <textarea
                     value={draft[k].join("\n")}
                     onChange={(e) =>
-                      setDraft({
+                      update({
                         ...draft,
                         [k]: e.target.value.split("\n").filter(Boolean),
                       })
@@ -146,23 +209,23 @@ export function CognitionSuggestion({
         onEvidence={onEvidence}
       />
       <div className="record-actions">
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
         <button
           className="primary"
-          disabled={stale}
-          onClick={() =>
-            onAction(() =>
-              window.uki.resolve(value.id, "accept", edit ? draft : undefined),
-            )
-          }
+          disabled={stale || busy}
+          title={stale ? "已确认认知变化，请重新生成建议" : ""}
+          onClick={() => resolve("accept")}
         >
           {edit ? "保存并接受" : "接受认知建议"}
         </button>
-        <button disabled={stale} onClick={() => setEdit(!edit)}>
+        <button disabled={stale || busy} onClick={() => setEdit(!edit)}>
           {edit ? "取消修改" : "修改后接受"}
         </button>
-        <button
-          onClick={() => onAction(() => window.uki.resolve(value.id, "reject"))}
-        >
+        <button disabled={busy} onClick={() => resolve("reject")}>
           拒绝
         </button>
       </div>

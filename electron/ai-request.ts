@@ -100,7 +100,19 @@ export class AiRequests {
       expanded = false,
       last: Completion | undefined,
       repairPrompt = "";
-    const save = () => this.store.setMeta(cacheKey, JSON.stringify(attempts));
+    const save = () =>
+      this.store.setMeta(
+        cacheKey,
+        JSON.stringify(
+          this.store.aiOwnerPurged(owner)
+            ? attempts.map((a) => ({
+                ...a,
+                partial: undefined,
+                result: a.result ? { ...a.result, content: "" } : undefined,
+              }))
+            : attempts,
+        ),
+      );
     const usage = () =>
       attempts.reduce(
         (sum, a) => ({

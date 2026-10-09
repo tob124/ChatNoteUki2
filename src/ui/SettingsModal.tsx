@@ -413,6 +413,11 @@ export function SettingsModal({
           {data.statistics.lastCheck
             ? new Date(data.statistics.lastCheck).toLocaleString("zh-CN")
             : "尚未检查"}
+          <br />
+          最近成功上传：
+          {data.statistics.lastUpload
+            ? new Date(data.statistics.lastUpload).toLocaleString("zh-CN")
+            : "尚未上传思想变化"}
         </p>
         <details>
           <summary>同步诊断 · 最近 {data.diagnostics.length} 次请求</summary>

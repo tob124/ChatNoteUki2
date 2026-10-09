@@ -32,24 +32,28 @@ export function parseRecapResult(input: unknown, refs: Evidence[]) {
       `回顾格式校验失败：${fields.join("、")}缺失、类型错误或超过长度限制。结果未保存，可手动重试。`,
     );
   }
+  let invalidReferences = 0;
   const evidenceIds = [
     ...new Set(
-      parsed.data.evidenceIds.map((id) => {
+      parsed.data.evidenceIds.flatMap((id) => {
         const lower = id.toLowerCase();
         const exact = refs.find((r) => r.noteId === lower);
-        if (exact) return exact.noteId;
+        if (exact) return [exact.noteId];
         const matches = /^[0-9a-f]{8}(?:-[0-9a-f-]+)?$/.test(lower)
           ? refs.filter((r) => r.noteId.startsWith(lower))
           : [];
-        if (matches.length !== 1)
-          throw new Error(
-            "回顾的原文引用不在本次上下文中，或缩写不能唯一识别。结果未保存，可手动重试。",
-          );
-        return matches[0].noteId;
+        if (matches.length !== 1) invalidReferences++;
+        return matches.length === 1 ? [matches[0].noteId] : [];
       }),
     ),
   ];
-  return { ...parsed.data, evidenceIds };
+  if (!evidenceIds.length)
+    throw new Error(
+      "回顾引用不在本次上下文，或缩写不能唯一识别。没有可验证引用，结果未应用，请手动重试",
+    );
+  const warnings =
+    invalidReferences > 0 ? ["部分原文引用无效，已排除；请核对回顾结论"] : [];
+  return { ...parsed.data, evidenceIds, warnings };
 }
 
 export const recapInstructions =

@@ -1,12 +1,12 @@
-// Explicit Windows installation acceptance. Artificial data is isolated from the daily profile; no AI key is used.
+// Actual installed Windows upgrade. Synthetic data and test-only DPAPI password.
 import { _electron as electron } from "@playwright/test";
-import { spawnSync, spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdirSync,
   readFileSync,
   writeFileSync,
-  existsSync,
   readdirSync,
+  existsSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
@@ -17,11 +17,11 @@ const installed = join(
   "ChatNoteUki",
   "ChatNoteUki.exe",
 );
-const folder = resolve(".local", `upgrade-${Date.now()}`);
+const folder = resolve(".local", `upgrade-four-${Date.now()}`);
 mkdirSync(folder, { recursive: true });
 const seedFile = join(folder, "seed.mjs");
 await build({
-  entryPoints: ["scripts/seed-upgrade.ts"],
+  entryPoints: ["scripts/seed-upgrade-four.ts"],
   outfile: seedFile,
   bundle: true,
   platform: "node",
@@ -33,7 +33,7 @@ const seed = spawnSync(
   [seedFile, join(folder, "thoughts.db")],
   { windowsHide: true, encoding: "utf8" },
 );
-if (seed.status !== 0) throw new Error("合成旧库创建失败");
+assert.equal(seed.status, 0, seed.stderr);
 const launch = () =>
   electron.launch({
     executablePath: installed,
@@ -44,6 +44,7 @@ const launch = () =>
   });
 let app = await launch();
 let page = await app.firstWindow();
+await page.getByLabel("写下想法").waitFor();
 const oldVersion = await app.evaluate(({ app }) => app.getVersion());
 await page.evaluate(async () => {
   const { settings } = await window.uki.view();
@@ -57,13 +58,11 @@ await page.evaluate(async () => {
     undefined,
     "test-only-preserved-password",
   );
-  await window.uki.capture({ raw: "旧版未完成记录，升级不得自动重复调用。" });
 });
 const before = await page.evaluate(() => window.uki.view());
-assert.equal(before.settings.hasApiKey, false);
 const credentials = readFileSync(join(folder, "credentials.json"));
 await app.close();
-const installer = resolve("release/ChatNoteUki-0.2.0-Setup-x64.exe");
+const installer = resolve("release/ChatNoteUki-0.4.0-Setup-x64.exe");
 assert.ok(existsSync(installer));
 const exit = await new Promise((res, rej) => {
   const child = spawn(installer, ["/S"], {
@@ -77,45 +76,49 @@ assert.equal(exit, 0);
 app = await launch();
 try {
   page = await app.firstWindow();
-  await page.getByRole("heading", { name: "想法，从这里开始" }).waitFor();
+  await page.getByLabel("写下想法").waitFor();
   const after = await page.evaluate(() => window.uki.view());
   const version = await app.evaluate(({ app }) => app.getVersion());
-  assert.equal(version, "0.2.0");
-  assert.equal(after.notes.length, before.notes.length);
-  assert.equal(after.notes[0].raw, before.notes[0].raw);
-  assert.equal(after.notes[0].title, before.notes[0].title);
-  assert.equal(after.notes[0].synopsis, before.notes[0].synopsis);
-  assert.equal(after.notes[0].reply, before.notes[0].reply);
-  assert.equal(after.notes[0].threadId, null);
-  assert.equal(after.notes[0].originalThreadId, before.notes[0].threadId);
-  assert.equal(after.cognitions[0].viewpoint, before.cognitions[0].viewpoint);
-  assert.equal(after.threads[0].archived, true);
-  assert.equal(after.notes[1].status, "failed");
+  assert.equal(version, "0.4.0");
+  assert.deepEqual(after.notes, before.notes);
+  assert.deepEqual(after.threads, before.threads);
+  assert.deepEqual(after.cognitions, before.cognitions);
   assert.deepEqual(readFileSync(join(folder, "credentials.json")), credentials);
-  assert.ok(
-    readdirSync(join(folder, "backups")).some((f) =>
-      f.startsWith("before-0.2.0-"),
-    ),
+  assert.equal(
+    (await page.evaluate(() => window.uki.workspaceState("all"))).draft,
+    "升级保留草稿",
   );
-  await page.screenshot({ path: join(folder, "upgraded.png") });
-  const seq = after.notes.length;
+  const backupCreated =
+    existsSync(join(folder, "backups")) &&
+    readdirSync(join(folder, "backups")).some((f) =>
+      f.startsWith("before-0.4.0-"),
+    );
+  if (oldVersion !== version) assert.ok(backupCreated);
+  await page.getByLabel("写下想法").fill("升级后的离线记录");
+  await page.getByRole("button", { name: "保存想法", exact: true }).click();
+  await page.getByLabel("写下想法").fill("退出前的未提交草稿");
   await app.close();
   app = await launch();
   page = await app.firstWindow();
+  await page.getByLabel("写下想法").waitFor();
+  assert.equal(
+    await page.getByLabel("写下想法").inputValue(),
+    "退出前的未提交草稿",
+  );
   assert.equal(
     (await page.evaluate(() => window.uki.view())).notes.length,
-    seq,
+    before.notes.length + 1,
   );
+  await page.screenshot({ path: join(folder, "upgraded.png") });
   const report = {
     oldVersion,
     version,
     installation: true,
-    legacyMigration: true,
-    sourceAndMetadataPreserved: true,
+    manualFieldsPreserved: true,
     cognitionPreserved: true,
     credentialsUnchanged: true,
-    backupCreated: true,
-    restartStable: true,
+    backupCreated,
+    draftAndOfflineRestart: true,
     paidAiCalls: 0,
   };
   writeFileSync(join(folder, "report.json"), JSON.stringify(report, null, 2));

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CognitionEditor } from "./CognitionEditor";
 import type {
   Evidence,
+  Cognition,
   AiTask,
   Thread,
   ThreadResources,
@@ -278,28 +279,13 @@ export function ResourcesPanel({
                       .slice()
                       .reverse()
                       .map((c) => (
-                        <section key={c.version}>
-                          <span className="section-label">
-                            版本 {c.version}
-                          </span>
-                          <CognitionContent value={c} />
-                          {c.version !== data.cognition.version &&
-                            !data.thread!.archived && (
-                              <button
-                                onClick={() =>
-                                  onAction(() =>
-                                    window.uki.editCognition(
-                                      data.thread!.id,
-                                      data.cognition.version,
-                                      c,
-                                    ),
-                                  )
-                                }
-                              >
-                                将此版本恢复为新版本
-                              </button>
-                            )}
-                        </section>
+                        <CognitionHistory
+                          key={c.threadId + ":" + c.version}
+                          value={c}
+                          base={data.cognition.version}
+                          archived={!!data.thread!.archived}
+                          onAction={onAction}
+                        />
                       ))}
                   </details>
                 )}
@@ -335,5 +321,64 @@ export function ResourcesPanel({
     >
       {content}
     </aside>
+  );
+}
+function CognitionHistory({
+  value,
+  base,
+  archived,
+  onAction,
+}: {
+  value: Cognition;
+  base: number;
+  archived: boolean;
+  onAction: Action;
+}) {
+  const [full, setFull] = useState<Cognition | null>(null),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  return (
+    <details
+      onToggle={(e) => {
+        if (e.currentTarget.open && !full)
+          void window.uki
+            .cognitionVersion(value.threadId, value.version)
+            .then(setFull)
+            .catch((e) => setError(e.message));
+      }}
+    >
+      <summary>
+        版本 {value.version} · {value.viewpoint || "暂无概述"}
+      </summary>
+      {error && <p className="error">{error}</p>}
+      {full ? (
+        <CognitionContent value={full} />
+      ) : (
+        <p className="hint">读取版本…</p>
+      )}
+      {full && value.version !== base && !archived && (
+        <button
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            onAction(async () => {
+              try {
+                await window.uki.restoreCognition(
+                  value.threadId,
+                  value.version,
+                  base,
+                );
+              } catch (e) {
+                setError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setBusy(false);
+              }
+            });
+          }}
+        >
+          将此版本恢复为新版本
+        </button>
+      )}
+    </details>
   );
 }

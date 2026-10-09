@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NoteReply } from "./NoteReply";
 import { ResearchControls } from "./ResearchControls";
+import { MaterialLibrary } from "./MaterialLibrary";
 import type { AiTask } from "../shared";
 import {
   isShortNote,
@@ -59,12 +60,14 @@ export function RecordCard({
   const [editing, setEditing] = useState<"body" | "title" | null>(null),
     [draft, setDraft] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [replying, setReplying] = useState(false);
   const [busy, setBusy] = useState(false),
     [confirmPurge, setConfirmPurge] = useState(false),
     [deletedNow, setDeletedNow] = useState(false);
   const [older, setOlder] = useState<Note[]>([]),
     [beforeConversation, setBeforeConversation] = useState<string | null>(null);
+  const loadedDetail = useRef<typeof detail>(null);
   const [editBase, setEditBase] = useState({
     version: note.revision ?? 0,
     title: note.title,
@@ -105,6 +108,7 @@ export function RecordCard({
     if (busy) return;
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       await fn();
     } catch (e) {
@@ -146,10 +150,31 @@ export function RecordCard({
       .then((d) => {
         if (active) {
           setDetail(d);
-          setOlder([]);
-          setBeforeConversation(
-            d.discussions.length === 30 ? d.discussions[0].id : null,
-          );
+          const previous = loadedDetail.current;
+          if (previous?.note.id === d.note.id) {
+            setOlder((older) =>
+              older.length
+                ? [
+                    ...new Map(
+                      [...older, ...previous.discussions]
+                        .filter(
+                          (n) =>
+                            !d.discussions.some(
+                              (current) => current.id === n.id,
+                            ),
+                        )
+                        .map((n) => [n.id, n]),
+                    ).values(),
+                  ]
+                : older,
+            );
+          } else {
+            setOlder([]);
+            setBeforeConversation(
+              d.discussions.length === 30 ? d.discussions[0].id : null,
+            );
+          }
+          loadedDetail.current = d;
         }
       })
       .catch((e) => {
@@ -182,7 +207,20 @@ export function RecordCard({
           />
         )}
         {note.bookmarked && <span className="hint">已收藏</span>}
-        <details className="action-menu">
+        <details
+          className="action-menu"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.currentTarget.open = false;
+              e.currentTarget.querySelector("summary")?.focus();
+            }
+          }}
+          onClick={(e) => {
+            if (e.target instanceof HTMLElement && e.target.closest("button"))
+              e.currentTarget.open = false;
+          }}
+        >
           <summary aria-label={`更多操作 · ${note.title}`}>···</summary>
           <div className="menu-items">
             {note.deletedAt ? (
@@ -237,7 +275,7 @@ export function RecordCard({
                       await navigator.clipboard.writeText(
                         d.note.currentRaw ?? d.note.raw,
                       );
-                      setError("已复制原文");
+                      setNotice("已复制原文");
                     })
                   }
                 >
@@ -252,6 +290,37 @@ export function RecordCard({
                 >
                   导出笔记…
                 </button>
+                <button
+                  onClick={() =>
+                    onAction(() =>
+                      localAction(() => window.uki.importFiles(note.id)),
+                    )
+                  }
+                >
+                  关联附件…
+                </button>
+                <label className="menu-move">
+                  移动笔记与其讨论{" "}
+                  <select
+                    aria-label="所属线程"
+                    value={full.threadId ?? ""}
+                    onChange={(e) =>
+                      onAction(() =>
+                        window.uki.move(note.id, e.target.value || null),
+                      )
+                    }
+                  >
+                    <option value="">待整理</option>
+                    {threads
+                      .filter((t) => !t.archived || t.id === full.threadId)
+                      .map((t) => (
+                        <option key={t.id} value={t.id} disabled={t.archived}>
+                          {t.parentId ? "↳ " : ""}
+                          {t.title}
+                        </option>
+                      ))}
+                  </select>
+                </label>
                 {["pending", "running"].includes(note.status) && (
                   <button
                     onClick={() =>
@@ -301,6 +370,11 @@ export function RecordCard({
           <button onClick={() => setConfirmPurge(false)}>取消</button>
         </div>
       )}
+      {notice && (
+        <p className="hint" role="status">
+          {notice}
+        </p>
+      )}
       {deletedNow && (
         <button
           onClick={() => onAction(() => window.uki.trash([note.id], "restore"))}
@@ -336,11 +410,31 @@ export function RecordCard({
           )}
         </div>
         <h2>{highlighted(note.title)}</h2>
+
         <p className={short ? "raw-preview" : "synopsis"}>
           <span className="preview-label">{short ? "原文" : "AI 摘要"}</span>
           {highlighted(short ? note.raw : note.synopsis || "待生成")}
         </p>
       </button>
+      {note.searchMatches?.map((match, index) => (
+        <p className="search-match" key={index}>
+          <span className="section-label">
+            命中{match.kind}
+            {match.revision !== undefined ? ` · v${match.revision}` : ""}
+          </span>{" "}
+          {highlighted(match.text)}
+          {match.revision !== undefined && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onEvidence({ noteId: note.id, revision: match.revision! });
+              }}
+            >
+              核对旧正文
+            </button>
+          )}
+        </p>
+      ))}
       {expanded && (
         <div className="record-body">
           {!detail ? (
@@ -398,6 +492,7 @@ export function RecordCard({
                       aria-label={editing === "body" ? "更正正文" : "手动标题"}
                       autoFocus
                       value={draft}
+                      disabled={busy}
                       onChange={(e) => {
                         const text = e.target.value;
                         setDraft(text);
@@ -438,6 +533,14 @@ export function RecordCard({
                   <p>{full.partialReply}</p>
                 </div>
               )}
+              <details>
+                <summary>关联参考资料</summary>
+                <MaterialLibrary
+                  noteId={note.id}
+                  onAction={onAction}
+                  revisionToken={revisionToken}
+                />
+              </details>
               {detail.discussions.length > 0 && (
                 <details open={replying ? true : undefined}>
                   <summary>
@@ -524,25 +627,6 @@ export function RecordCard({
                 >
                   {replying ? "收起回复" : "回复 AI"}
                 </button>
-                <select
-                  aria-label="所属线程"
-                  value={full.threadId ?? ""}
-                  onChange={(e) =>
-                    onAction(() =>
-                      window.uki.move(note.id, e.target.value || null),
-                    )
-                  }
-                >
-                  <option value="">待整理</option>
-                  {threads
-                    .filter((t) => !t.archived || t.id === full.threadId)
-                    .map((t) => (
-                      <option key={t.id} value={t.id} disabled={t.archived}>
-                        {t.parentId ? "↳ " : ""}
-                        {t.title}
-                      </option>
-                    ))}
-                </select>
               </div>
               {full.mode === "note" && (
                 <ResearchControls

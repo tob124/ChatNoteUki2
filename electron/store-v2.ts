@@ -1,10 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { humanizeGenerated, humanizeText } from "./presentation";
 import { redactEvent, redactBatch } from "./redaction";
+import { materialSchema, type Material } from "../src/materials";
 import {
   researchInputSchema,
   researchCheckpointSchema,
@@ -52,6 +53,7 @@ const threadSchema = z.object({
   pinned: z.boolean().optional(),
 });
 const noteSchema = z.object({
+  materialIds: z.array(uuid).max(10).optional(),
   researchId: uuid.optional(),
   id: uuid,
   raw: z.string().min(1).max(50000),
@@ -120,7 +122,9 @@ export const structureInputSchema = z.object({
 });
 const taskSchema = z.object({
   id: uuid,
-  kind: z.enum(["organize", "cognition", "recap", "research"]),
+  kind: z.enum(["organize", "cognition", "recap", "research", "material"]),
+  materialId: uuid.optional(),
+  inputBases: basesSchema.optional(),
   research: researchInputSchema.optional(),
   noteIds: z.array(uuid).max(10),
   threadId: uuid.nullable(),
@@ -171,6 +175,7 @@ const schemas = {
     id: uuid,
     input: z.string().max(1000000).optional(),
     inputVersions: z.array(evidenceSchema).max(30).optional(),
+    inputBases: basesSchema.optional(),
     inputRevision: natural.optional(),
     componentErrors: z.record(z.string(), z.string().max(1000)).optional(),
   }),
@@ -227,7 +232,10 @@ const schemas = {
   "usage.reserved": usageSchema,
   "usage.released": z.object({ id: uuid }),
   "library.migrated": z.object({ version: z.literal(2) }),
-  "library.raw-reimported": z.object({ version: z.literal(1) }),
+  "library.raw-reimported": z.object({
+    version: z.literal(1),
+    sources: z.array(z.object({ id: uuid, sourceId: uuid })).optional(),
+  }),
   "structure.added": structureInputSchema.extend({
     id: uuid,
     fingerprint: z.string().length(64),
@@ -251,6 +259,7 @@ const schemas = {
   "structure.undone": z.object({ id: uuid }),
   "task.added": taskSchema,
   "task.updated": z.object({
+    resetInput: z.boolean().optional(),
     id: uuid,
     status: z.enum([
       "pending",
@@ -318,8 +327,10 @@ export class Store {
   private db: DatabaseSync;
   readonly path: string;
   onCommitted?: () => void;
-  constructor(path: string) {
+  private legacyAliases?: Map<string, string[]>;
+  constructor(path: string, upgradeBackup = true) {
     this.path = path;
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db
       .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
@@ -337,6 +348,9 @@ export class Store {
    CREATE TABLE IF NOT EXISTS task_notes_v2(taskId TEXT NOT NULL,noteId TEXT NOT NULL,PRIMARY KEY(taskId,noteId));
    CREATE INDEX IF NOT EXISTS task_notes_v2_note ON task_notes_v2(noteId);
    CREATE VIRTUAL TABLE IF NOT EXISTS search_v2 USING fts5(id UNINDEXED,raw,title,synopsis,reply,tokenize='trigram');`);
+    this.db.exec(
+      "CREATE VIRTUAL TABLE IF NOT EXISTS material_search_v1 USING fts5(id UNINDEXED,text,summary,tokenize='trigram')",
+    );
     if (
       !this.db
         .prepare("PRAGMA table_info(entities_v2)")
@@ -356,7 +370,20 @@ export class Store {
         "ALTER TABLE note_query_v2 ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
       );
     if (
-      this.getMeta("projectionVersion") !== "2.7" ||
+      upgradeBackup &&
+      path !== ":memory:" &&
+      this.latestSeq() > 0 &&
+      this.getMeta("projectionVersion") !== "2.9" &&
+      !this.getMeta("backup0.4")
+    ) {
+      const folder = join(dirname(path), "backups");
+      mkdirSync(folder, { recursive: true });
+      const file = join(folder, "before-0.4.0-" + Date.now() + ".db");
+      this.db.prepare("VACUUM INTO ?").run(file);
+      this.setMeta("backup0.4", file);
+    }
+    if (
+      this.getMeta("projectionVersion") !== "2.9" ||
       Number(this.getMeta("projectedSeq") ?? -1) !== this.latestSeq() ||
       Number(this.getMeta("projectionNoteCount") ?? 0) !==
         Number(
@@ -437,6 +464,70 @@ export class Store {
   hasUsage(id: string) {
     return !!this.get("usage", id);
   }
+  aiOwnerPurged(id: string): boolean {
+    const note = this.get<Note>("notes", id);
+    if (note?.purged) return true;
+    const task = this.get<AiTask>("tasks", id);
+    if (
+      task?.materialId &&
+      this.get<Material>("materials", task.materialId)?.purged
+    )
+      return true;
+    const purged = this.purgedIds();
+    return !!task?.inputVersions?.some((r) => purged.has(r.noteId));
+  }
+  material(id: string): Material {
+    const value = this.get<Material>("materials", id);
+    if (!value) throw new Error("资料不存在");
+    return value;
+  }
+  locateNote(id: string): number {
+    if (this.note(id).deletedAt)
+      throw new Error("笔记已删除，请在回收站恢复后定位");
+    const row = this.db
+      .prepare("SELECT seq FROM note_query_v2 WHERE id=?")
+      .get(id);
+    if (!row) throw new Error("笔记不存在");
+    return Number(row.seq) + 1;
+  }
+  materialPage(
+    query = "",
+    before = Number.MAX_SAFE_INTEGER,
+    trash = false,
+    noteId?: string,
+  ) {
+    const clauses = [
+      "kind='materials'",
+      "seq<?",
+      "coalesce(json_extract(body,'$.purged'),0)=0",
+      trash
+        ? "json_extract(body,'$.deletedAt') IS NOT NULL"
+        : "json_extract(body,'$.deletedAt') IS NULL",
+    ];
+    const args: (string | number)[] = [before];
+    if (noteId) {
+      clauses.push("json_extract(body,'$.noteId')=?");
+      args.push(noteId);
+    }
+    for (const word of query.trim().split(/\s+/).filter(Boolean)) {
+      const like = "%" + word.replace(/[\\%_]/g, "\\$&") + "%";
+      clauses.push(
+        "(json_extract(body,'$.name') LIKE ? ESCAPE '\\' OR id IN (SELECT id FROM material_search_v1 WHERE (text||' '||summary) LIKE ? ESCAPE '\\'))",
+      );
+      args.push(like, like);
+    }
+    const rows = this.db
+      .prepare(
+        "SELECT seq,json_set(json_remove(body,'$.segments','$.summaries','$.synthesis'),'$.summary',substr(json_extract(body,'$.summary'),1,800)) AS summary FROM entities_v2 WHERE " +
+          clauses.join(" AND ") +
+          " ORDER BY seq DESC LIMIT 31",
+      )
+      .all(...args);
+    return {
+      items: rows.slice(0, 30).map((r) => JSON.parse(String(r.summary))),
+      before: rows.length > 30 ? Number(rows[29].seq) : null,
+    };
+  }
   resumeSoftBudget() {
     this.setMeta("noteBudgetDay", "");
     const tasks = this.db
@@ -457,7 +548,7 @@ export class Store {
   aiTasks() {
     const notes = this.db
       .prepare(
-        "SELECT id,title,status FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL AND status!='done' ORDER BY seq DESC LIMIT 50",
+        "SELECT id,title,status FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL ORDER BY (status='done'),seq DESC LIMIT 50",
       )
       .all()
       .map((r) => {
@@ -467,7 +558,14 @@ export class Store {
           kind: "note" as const,
           title: n.title,
           status: n.status,
-          stage: this.getMeta("ai-progress:" + n.id) ?? "等待处理",
+          stage:
+            n.status === "done"
+              ? "结果已保存"
+              : n.status === "pending"
+                ? "等待执行"
+                : n.status === "cancelled"
+                  ? "已停止应用结果"
+                  : (this.getMeta("ai-progress:" + n.id) ?? "等待处理"),
           error: n.error,
         };
       });
@@ -484,11 +582,23 @@ export class Store {
               recap: "线程回顾",
               cognition: "认知分析",
               research: "资料分析",
+              material: "附件摘要",
             }[t.kind] +
             " · " +
-            (t.threadId ? this.requireThread(t.threadId).title : "待整理"),
+            (t.materialId
+              ? this.material(t.materialId).name
+              : t.threadId
+                ? this.requireThread(t.threadId).title
+                : "待整理"),
           status: t.status,
-          stage: this.getMeta("ai-progress:" + t.id) ?? t.status,
+          stage:
+            t.status === "done"
+              ? "结果已保存"
+              : t.status === "pending"
+                ? "等待执行"
+                : t.status === "cancelled"
+                  ? "已停止应用结果"
+                  : (this.getMeta("ai-progress:" + t.id) ?? t.status),
           error: t.error,
         })),
     ];
@@ -561,11 +671,29 @@ export class Store {
         "INSERT INTO entities_v2 VALUES(?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body",
       )
       .run(kind, id, JSON.stringify(value), seq, value.createdAt ?? "");
+    if (kind === "materials") {
+      this.db.prepare("DELETE FROM material_search_v1 WHERE id=?").run(id);
+      this.db
+        .prepare("INSERT INTO material_search_v1 VALUES(?,?,?)")
+        .run(
+          id,
+          value.deletedAt
+            ? ""
+            : value.segments.map((s: any) => s.text).join("\n"),
+          value.deletedAt ? "" : value.summary,
+        );
+    }
     if (kind !== "notes") return;
     const n = value as Note,
       raw = n.currentRaw ?? n.raw;
     const summary = {
       ...n,
+      title:
+        [...n.title].slice(0, 80).join("") +
+        ([...n.title].length > 80 ? "…" : ""),
+      synopsis:
+        [...n.synopsis].slice(0, 400).join("") +
+        ([...n.synopsis].length > 400 ? "…" : ""),
       raw: [...(n.currentRaw ?? n.raw)]
         .slice(0, isShortNote(n.currentRaw ?? n.raw) ? 120 : 180)
         .join(""),
@@ -642,7 +770,17 @@ export class Store {
         );
         break;
       case "material.updated":
-        this.put("materials", p.id, p.value, seq);
+        if (p.value.id && p.value.id !== p.id)
+          throw new Error("资料标识不匹配");
+        this.put(
+          "materials",
+          p.id,
+          materialSchema.parse({
+            ...this.get<Material>("materials", p.id),
+            ...p.value,
+          }),
+          seq,
+        );
         break;
       case "thread.pinned":
         this.put(
@@ -733,7 +871,12 @@ export class Store {
         if (p.threadId) this.requireThread(p.threadId, true);
         const before: Record<
           string,
-          { threadId: string | null; version: number }
+          {
+            threadId: string | null;
+            version: number;
+            rawVersion: number;
+            title: string;
+          }
         > = {};
         for (const id of this.withDiscussions(p.ids)) {
           const n = this.note(id);
@@ -746,6 +889,8 @@ export class Store {
           before[id] = {
             threadId: n.threadId,
             version: (n.assignmentRevision ?? 0) + 1,
+            rawVersion: n.revision ?? 0,
+            title: n.title,
           };
           save({
             ...n,
@@ -762,11 +907,24 @@ export class Store {
         if (!move || move.undone) throw new Error("移动已撤销或不存在");
         for (const [id, old] of Object.entries(move.before) as [
           string,
-          { threadId: string | null; version: number },
+          {
+            threadId: string | null;
+            version: number;
+            rawVersion?: number;
+            title?: string;
+          },
         ][]) {
           const n = this.note(id);
-          if (n.deletedAt || n.assignmentRevision !== old.version)
-            throw new Error("移动后归属已有修改，不能直接撤销");
+          if (
+            n.deletedAt ||
+            n.assignmentRevision !== old.version ||
+            (old.rawVersion !== undefined &&
+              old.rawVersion !== (n.revision ?? 0)) ||
+            (old.title !== undefined && old.title !== n.title)
+          )
+            throw new Error(
+              "移动后归属或正文已有修改，不能直接撤销，请手动核对",
+            );
           save({
             ...n,
             threadId: old.threadId,
@@ -971,6 +1129,7 @@ export class Store {
         break;
       }
       case "library.raw-reimported": {
+        this.legacyAliases = undefined;
         if (this.getMeta("rawReimport")) throw new Error("原文已重新导入");
         // Keep inbox receipts and budget accounting: neither may be reset by an upgrade.
         this.db.exec(
@@ -1098,7 +1257,15 @@ export class Store {
       case "task.updated": {
         const t = this.get<AiTask>("tasks", p.id);
         if (!t) throw new Error("任务不存在");
-        this.put("tasks", p.id, { ...t, ...p }, seq);
+        const next = { ...t, ...p };
+        if (p.resetInput) {
+          delete next.input;
+          delete next.inputVersions;
+          delete next.inputBases;
+          delete next.candidate;
+          delete next.resetInput;
+        }
+        this.put("tasks", p.id, next, seq);
         break;
       }
       case "recap.added":
@@ -1310,7 +1477,7 @@ export class Store {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec(
-        "DELETE FROM entities_v2; DELETE FROM note_query_v2; DELETE FROM search_v2; DELETE FROM task_notes_v2;",
+        "DELETE FROM entities_v2; DELETE FROM note_query_v2; DELETE FROM search_v2; DELETE FROM task_notes_v2; DELETE FROM material_search_v1;",
       );
       this.db
         .prepare(
@@ -1322,7 +1489,7 @@ export class Store {
         .iterate())
         this.apply(validateEvent(JSON.parse(String(r.body))), Number(r.seq));
       this.setMeta("projectedSeq", String(this.latestSeq()));
-      this.setMeta("projectionVersion", "2.7");
+      this.setMeta("projectionVersion", "2.9");
       this.db.exec("COMMIT");
     } catch (e) {
       this.db.exec("ROLLBACK");
@@ -1373,7 +1540,13 @@ export class Store {
         const r = insert.run(e.id, JSON.stringify(e));
         this.apply(e, Number(r.lastInsertRowid));
       }
-      if (valid.some((e) => e.type === "note.purged")) {
+      if (
+        valid.some(
+          (e) =>
+            e.type === "note.purged" ||
+            (e.type === "material.updated" && (e.payload as any).value?.purged),
+        )
+      ) {
         const purged = this.purgedIds();
         for (const row of this.db.prepare("SELECT id,body FROM events").all()) {
           const old = JSON.parse(String(row.body));
@@ -1416,7 +1589,12 @@ export class Store {
             .prepare("DELETE FROM meta WHERE key LIKE ?")
             .run("workspace:edit:" + id + ":%");
         }
+        for (const task of this.all<AiTask>("tasks"))
+          if (this.aiOwnerPurged(task.id))
+            for (const key of this.metaKeys("ai-step:" + task.id + ":"))
+              this.db.prepare("DELETE FROM meta WHERE key=?").run(key);
         this.setMeta("purgePending", "1");
+        this.setMeta("purgeLocalPending", "1");
       }
       this.setMeta("projectedSeq", String(this.latestSeq()));
       this.db.exec("COMMIT");
@@ -1427,14 +1605,119 @@ export class Store {
     this.onCommitted?.();
   }
   purgedIds(): Set<string> {
-    return new Set(
+    const ids = new Set(
       this.db
         .prepare(
-          "SELECT id FROM entities_v2 WHERE kind='notes' AND json_extract(body,'$.purged')=1",
+          "SELECT id FROM entities_v2 WHERE kind IN ('notes','materials') AND json_extract(body,'$.purged')=1",
         )
         .all()
         .map((r) => String(r.id)),
     );
+    if (!ids.size) return ids;
+    if (!this.legacyAliases) {
+      this.legacyAliases = new Map();
+      const reset = this.db
+        .prepare(
+          "SELECT seq,body FROM events WHERE json_extract(body,'$.type')='library.raw-reimported' ORDER BY seq DESC LIMIT 1",
+        )
+        .get();
+      if (reset) {
+        const added = (before: boolean) =>
+          this.db
+            .prepare(
+              "SELECT body FROM events WHERE seq " +
+                (before ? "<" : ">") +
+                " ? AND json_extract(body,'$.type')='note.added' ORDER BY seq",
+            )
+            .all(reset.seq)
+            .map((r) => JSON.parse(String(r.body)).payload as Note);
+        const old = added(true),
+          roots = old.filter((n) => n.mode === "note" && !n.parentNoteId),
+          fresh = added(false).filter((n) => n.reentered);
+        // Reentry preserves order, including duplicate texts. Never guess from text.
+        const sources = JSON.parse(String(reset.body)).payload.sources as
+          { id: string; sourceId: string }[] | undefined;
+        const pairs =
+          sources ??
+          (roots.length === fresh.length
+            ? roots.map((n, i) => ({ id: fresh[i].id, sourceId: n.id }))
+            : []);
+        for (const pair of pairs)
+          this.legacyAliases.set(pair.id, [
+            pair.sourceId,
+            ...old
+              .filter((c) => c.parentNoteId === pair.sourceId)
+              .map((c) => c.id),
+          ]);
+      }
+    }
+    for (const id of [...ids])
+      for (const alias of this.legacyAliases.get(id) ?? []) ids.add(alias);
+    return ids;
+  }
+  /** Scrub only app-created database backups; manual exports remain user-managed. */
+  maintainLocalCopies() {
+    if (this.path === ":memory:" || !this.getMeta("purgeLocalPending")) return;
+    const folder = join(dirname(this.path), "backups"),
+      ids = this.purgedIds();
+    if (existsSync(folder) && !lstatSync(folder).isSymbolicLink()) {
+      for (const name of readdirSync(folder)) {
+        if (!/^before-[a-z0-9.-]+\.db$/i.test(name)) continue;
+        const path = join(folder, name);
+        if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())
+          continue;
+        const backup = new Store(path, false);
+        try {
+          const events: ThoughtEvent[] = [];
+          for (const id of ids) {
+            const note = backup.get<Note>("notes", id);
+            if (note && !note.purged && !note.parentNoteId) {
+              if (!note.deletedAt)
+                events.push(backup.event("note.trashed", { id }));
+              events.push(backup.event("note.purged", { id }));
+            }
+            const material = backup.get<Material>("materials", id);
+            if (material && !material.purged)
+              events.push(
+                backup.event("material.updated", {
+                  id,
+                  value: {
+                    purged: true,
+                    deletedAt: new Date().toISOString(),
+                    status: "cancelled",
+                    segments: [],
+                    summary: "",
+                    summaries: [],
+                    synthesis: [],
+                  },
+                }),
+              );
+          }
+          if (events.length) backup.appendMany(events);
+          for (const id of ids)
+            for (const key of backup.metaKeys("ai-step:" + id + ":"))
+              backup.db.prepare("DELETE FROM meta WHERE key=?").run(key);
+          // Backups can also contain pre-reentry events absent from their projection.
+          for (const row of backup.db
+            .prepare("SELECT id,body FROM events")
+            .all()) {
+            const next = JSON.stringify(
+              redactEvent(JSON.parse(String(row.body)), ids),
+            );
+            if (next !== row.body)
+              backup.db
+                .prepare("UPDATE events SET body=? WHERE id=?")
+                .run(next, row.id);
+          }
+          backup.rebuild();
+          backup.db.exec("VACUUM");
+        } finally {
+          backup.close();
+        }
+      }
+    }
+    this.db.exec("VACUUM");
+    this.db.prepare("DELETE FROM meta WHERE key='purgeLocalPending'").run();
   }
   eventsAfter(seq = 0): { seq: number; event: ThoughtEvent }[] {
     return this.db
@@ -1501,17 +1784,28 @@ export class Store {
       this.db.prepare("VACUUM INTO ?").run(file);
       this.setMeta("rawReimportBackup", file);
     }
-    const events = [this.event("library.raw-reimported", { version: 1 })];
+    const sources: { id: string; sourceId: string }[] = [];
+    const events: ThoughtEvent[] = [];
     for (const old of notes) {
-      if (old.mode !== "note" || old.parentNoteId) continue;
+      if (
+        old.mode !== "note" ||
+        old.parentNoteId ||
+        old.deletedAt ||
+        old.purged
+      )
+        continue;
       const note = this.createNote(
         { raw: old.currentRaw ?? old.raw },
         old.source,
       );
       note.createdAt = old.createdAt;
       note.reentered = true;
+      sources.push({ id: note.id, sourceId: old.id });
       events.push(this.event("note.added", note));
     }
+    events.unshift(
+      this.event("library.raw-reimported", { version: 1, sources }),
+    );
     this.appendMany(events);
   }
   createNote(
@@ -1520,6 +1814,15 @@ export class Store {
     id: string = randomUUID(),
   ): Note {
     const v = captureSchema.parse(rawInput);
+    if (v.materialIds?.length) {
+      if (v.mode !== "discussion")
+        throw new Error("请在主动讨论中选择参考资料");
+      for (const id of v.materialIds) {
+        const material = this.material(id);
+        if (material.deletedAt || !material.segments.length)
+          throw new Error("所选资料已删除或尚未提取文字");
+      }
+    }
     if (v.mode === "discussion" && !v.parentNoteId)
       throw new Error("请从一条笔记发起讨论");
     if (v.researchId) {
@@ -1533,6 +1836,7 @@ export class Store {
     return {
       id,
       raw: v.raw,
+      ...(v.materialIds ? { materialIds: v.materialIds } : {}),
       ...(v.researchId ? { researchId: v.researchId } : {}),
       title: [
         ...(v.raw.split(/\r\n|\r|\n/).find((s) => s.trim()) ?? "新想法").trim(),
@@ -1559,7 +1863,21 @@ export class Store {
     };
   }
   capture(input: unknown) {
-    const n = this.createNote(input);
+    const parsed = captureSchema.parse(input);
+    if (parsed.clientId) {
+      const existing = this.get<Note>("notes", parsed.clientId);
+      if (existing) {
+        if (
+          existing.purged ||
+          existing.raw !== parsed.raw ||
+          existing.mode !== parsed.mode ||
+          (existing.parentNoteId ?? null) !== parsed.parentNoteId
+        )
+          throw new Error("保存请求已存在但内容不同，请重新保存");
+        return existing.id;
+      }
+    }
+    const n = this.createNote(parsed, "desktop", parsed.clientId);
     this.append("note.added", n);
     return n.id;
   }
@@ -1571,6 +1889,15 @@ export class Store {
         version: 0,
       }
     );
+  }
+  cognitionVersion(threadId: string, version: number): Cognition {
+    this.requireThread(threadId);
+    const value = this.get<Cognition>(
+      "cognitionHistory",
+      threadId + ":" + version,
+    );
+    if (!value) throw new Error("认知版本不存在");
+    return value;
   }
   revision(id: string, revision: number): NoteRevision {
     const n = this.note(id);
@@ -1632,14 +1959,14 @@ export class Store {
       notes: Number(
         this.db
           .prepare(
-            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE json_extract(summary,'$.deletedAt') IS NULL",
+            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE parentNoteId IS NULL AND json_extract(summary,'$.deletedAt') IS NULL",
           )
           .get()?.n,
       ),
       unassigned: Number(
         this.db
           .prepare(
-            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE threadId IS NULL AND json_extract(summary,'$.deletedAt') IS NULL",
+            "SELECT COUNT(*) AS n FROM note_query_v2 WHERE parentNoteId IS NULL AND threadId IS NULL AND json_extract(summary,'$.deletedAt') IS NULL",
           )
           .get()?.n,
       ),
@@ -1698,6 +2025,11 @@ export class Store {
           : "json_extract(summary,'$.deletedAt') IS NULL",
       ],
       args: (string | number)[] = [];
+    if (
+      q.workspace === "trash" ||
+      (!q.query && (!q.aiFilter || q.aiFilter === "all"))
+    )
+      clauses.push("parentNoteId IS NULL");
     if (q.bookmarked || q.workspace === "favorites")
       clauses.push("json_extract(summary,'$.bookmarked')=1");
     if (q.workspace === "pending") clauses.push("threadId IS NULL");
@@ -1845,6 +2177,54 @@ export class Store {
             : kind === "research"
               ? this.research(String(r.id), false)
               : this.get<any>(bucket, String(r.id));
+      if (kind === "note" && q.query?.trim()) {
+        const row = this.db
+          .prepare(
+            "SELECT raw,title,synopsis,reply FROM note_query_v2 WHERE id=?",
+          )
+          .get(String(r.id))!;
+        const words = q.query.trim().toLocaleLowerCase().split(/\s+/);
+        const sources: { kind: string; text: string; revision?: number }[] =
+          q.searchIn === "reply"
+            ? [{ kind: "AI 回应", text: String(row.reply) }]
+            : [
+                { kind: "原文", text: String(row.raw) },
+                { kind: "标题", text: String(row.title) },
+                { kind: "AI 摘要", text: String(row.synopsis) },
+              ];
+        if (q.includeHistory && q.searchIn !== "reply") {
+          const histories = this.db
+            .prepare(
+              "SELECT body FROM entities_v2 WHERE kind='revisions' AND json_extract(body,'$.noteId')=? ORDER BY seq DESC",
+            )
+            .all(String(r.id));
+          for (const old of histories) {
+            const version = JSON.parse(String(old.body));
+            if (version.revision !== (value.revision ?? 0))
+              sources.push({
+                kind: "旧版本",
+                text: version.raw,
+                revision: version.revision,
+              });
+          }
+        }
+        value.searchMatches = sources
+          .flatMap((source) => {
+            const lower = source.text.toLocaleLowerCase(),
+              index = words.map((w) => lower.indexOf(w)).find((i) => i >= 0);
+            if (index === undefined) return [];
+            return [
+              {
+                ...source,
+                text:
+                  (index > 32 ? "…" : "") +
+                  source.text.slice(Math.max(0, index - 32), index + 160) +
+                  (source.text.length > index + 160 ? "…" : ""),
+              },
+            ];
+          })
+          .slice(0, 5);
+      }
       return { seq: Number(r.seq), kind, value };
     });
     const newer =
@@ -1935,7 +2315,18 @@ export class Store {
       cognition: this.cognition(id ?? ""),
       proposals: this.forThread<Proposal>("proposals", id, 30),
       recaps,
-      cognitionHistory: this.forThread<Cognition>("cognitionHistory", id, 30),
+      cognitionHistory: this.db
+        .prepare(
+          "SELECT json_extract(body,'$.version') version,substr(json_extract(body,'$.viewpoint'),1,160) viewpoint FROM entities_v2 WHERE kind='cognitionHistory' AND json_extract(body,'$.threadId')=? ORDER BY seq DESC LIMIT 30",
+        )
+        .all(id)
+        .reverse()
+        .map((r) => ({
+          ...emptyContent(),
+          threadId: id!,
+          version: Number(r.version),
+          viewpoint: String(r.viewpoint),
+        })),
       count: scope.length
         ? Number(
             this.db
@@ -2154,8 +2545,8 @@ export class Store {
       .prepare(
         "SELECT body FROM entities_v2 WHERE kind='tasks' AND " +
           (kind === "organize"
-            ? "json_extract(body,'$.kind')='organize'"
-            : "json_extract(body,'$.kind')!='organize'") +
+            ? "json_extract(body,'$.kind') IN ('organize','material')"
+            : "json_extract(body,'$.kind') NOT IN ('organize','material')") +
           " AND (json_extract(body,'$.status')='pending' OR (json_extract(body,'$.status')='budget' AND json_extract(body,'$.budgetDay')!=?)) ORDER BY seq LIMIT 1",
       )
       .get(day);
@@ -2179,6 +2570,14 @@ export class Store {
             snippet: "",
           })),
         };
+  }
+  relatedResearches(noteId: string): Research[] {
+    return this.db
+      .prepare(
+        "SELECT id FROM entities_v2 WHERE kind='researches' AND json_extract(body,'$.noteId')=? ORDER BY seq",
+      )
+      .all(noteId)
+      .map((r) => this.research(String(r.id), false));
   }
   tasks(): AiTask[] {
     return this.all("tasks");

@@ -34,6 +34,7 @@ import type { Research } from "../research";
 import { ThreadDialog } from "./ThreadDialog";
 import { SettingsModal } from "./SettingsModal";
 import { TaskPanel } from "./TaskPanel";
+import { MaterialLibrary } from "./MaterialLibrary";
 const blank = (): WorkspaceState => ({
   draft: "",
   mode: "note",
@@ -81,6 +82,9 @@ export function App() {
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
   const [taskPanel, setTaskPanel] = useState(false);
+  const [materialOpen, setMaterialOpen] = useState<string>();
+  const captureLock = useRef(false),
+    submission = useRef<{ raw: string; id: string } | null>(null);
   const [streaming, setStreaming] = useState<Record<string, string>>({});
   useEffect(
     () =>
@@ -89,12 +93,16 @@ export function App() {
       ),
     [],
   );
-  const [returnWorkspace, setReturnWorkspace] = useState<string | null>(null);
+  const [returnWorkspace, setReturnWorkspace] = useState<{
+    workspace: string;
+    state: WorkspaceState;
+  } | null>(null);
   const [selectedNotes, setSelectedNotes] = useState<string[]>([]),
     [moveTarget, setMoveTarget] = useState(""),
     [movePreview, setMovePreview] = useState(false),
     [undoMoveId, setUndoMoveId] = useState<string | null>(null),
     [undoTrash, setUndoTrash] = useState<string[]>([]),
+    [purgePreview, setPurgePreview] = useState(false),
     [notice, setNotice] = useState("");
   const [externalReference, setExternalReference] =
     useState<ExternalReference | null>(null);
@@ -123,6 +131,19 @@ export function App() {
     ),
     refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   live.current = { workspace, state };
+  useEffect(
+    () =>
+      window.uki.onFlush(async () => {
+        if (initialized.current) {
+          const current = live.current;
+          await window.uki.workspaceState(current.workspace, {
+            ...current.state,
+            ...readingPosition(),
+          });
+        }
+      }),
+    [],
+  );
   const readingPosition = () => {
     const container = scroll.current;
     if (!container) return {};
@@ -393,10 +414,13 @@ export function App() {
     setReload((n) => n + 1);
   };
   const capture = async () => {
-    if (!state.draft.trim() || saving) return;
+    if (!state.draft.trim() || saving || captureLock.current) return;
+    captureLock.current = true;
     setSaving(true);
     setError("");
     const submitted = state.draft;
+    if (submission.current?.raw !== submitted)
+      submission.current = { raw: submitted, id: crypto.randomUUID() };
     if (
       !state.before &&
       !date &&
@@ -409,6 +433,7 @@ export function App() {
     try {
       const id = await window.uki.capture({
         raw: submitted,
+        clientId: submission.current!.id,
         threadId: threadId && !thread?.archived ? threadId : null,
         mode: "note",
         parentNoteId: null,
@@ -422,6 +447,7 @@ export function App() {
       setNotice(
         "已保存到本机" + (data?.settings.hasDavPassword ? " · 尚未上传" : ""),
       );
+      submission.current = null;
       void refresh().catch((e) =>
         setError(
           "原文已保存；界面刷新失败，请重新打开当前工作区。" + cleanError(e),
@@ -431,10 +457,16 @@ export function App() {
       setError(cleanError(e));
     } finally {
       setSaving(false);
+      captureLock.current = false;
     }
   };
   const showResult = (task: AiTask) =>
     action(async () => {
+      if (task.materialId) {
+        await navigate("research");
+        setMaterialOpen(task.materialId);
+        return;
+      }
       if (!task.resultId) return;
       if (task.kind === "research") await navigate("research");
       else if (task.threadId) await navigate(task.threadId);
@@ -648,7 +680,16 @@ export function App() {
               onClick={() => {
                 const destination = returnWorkspace;
                 setReturnWorkspace(null);
-                void navigate(destination);
+                void (async () => {
+                  await navigate(destination.workspace);
+                  setState(destination.state);
+                  setQuery(destination.state.query ?? "");
+                  setSearchIn(destination.state.searchIn ?? "original");
+                  setAiFilter(destination.state.aiFilter ?? "all");
+                  setDate(destination.state.date ?? "");
+                  restoreScroll.current = destination.state.scroll ?? 0;
+                  setReload((n) => n + 1);
+                })();
               }}
             >
               返回查找位置
@@ -842,16 +883,44 @@ export function App() {
               ))}
             </select>
             {workspace === "trash" ? (
-              <button
-                onClick={() =>
-                  action(async () => {
-                    await window.uki.trash(selectedNotes, "restore");
-                    setSelectedNotes([]);
-                  })
-                }
-              >
-                恢复所选
-              </button>
+              <>
+                <button
+                  onClick={() =>
+                    action(async () => {
+                      await window.uki.trash(selectedNotes, "restore");
+                      setSelectedNotes([]);
+                    })
+                  }
+                >
+                  恢复所选
+                </button>
+                <button onClick={() => setPurgePreview(true)}>
+                  彻底删除所选…
+                </button>
+                {purgePreview && (
+                  <div className="inline-confirm">
+                    <span>
+                      彻底删除所选 {selectedNotes.length}{" "}
+                      条笔记的正文与更正历史。此操作不可撤销，已有分析保留。
+                    </span>
+                    <button
+                      onClick={() =>
+                        action(async () => {
+                          await window.uki.trash(selectedNotes, "purge");
+                          setSelectedNotes([]);
+                          setPurgePreview(false);
+                          setNotice("所选笔记已彻底删除");
+                        })
+                      }
+                    >
+                      确认彻底删除
+                    </button>
+                    <button onClick={() => setPurgePreview(false)}>
+                      继续保留
+                    </button>
+                  </div>
+                )}
+              </>
             ) : (
               <>
                 <button onClick={() => setMovePreview(true)}>移动预览</button>
@@ -880,6 +949,7 @@ export function App() {
               onClick={() => {
                 setSelectedNotes([]);
                 setMovePreview(false);
+                setPurgePreview(false);
               }}
             >
               取消选择
@@ -985,6 +1055,20 @@ export function App() {
           }}
           tabIndex={0}
           aria-label="工作区记录"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            if (!e.dataTransfer.files.length) return;
+            e.preventDefault();
+            const files = Array.from(e.dataTransfer.files);
+            action(async () => {
+              const ids = await window.uki.importDropped(files);
+              setNotice(
+                `已保存 ${ids.length} 份原文件，可在资料页查看提取和摘要进度`,
+              );
+            });
+          }}
           onKeyDown={(e) => {
             if (e.altKey && e.key === "PageUp") {
               e.preventDefault();
@@ -996,6 +1080,15 @@ export function App() {
             }
           }}
         >
+          {(workspace === "research" || workspace === "trash") && (
+            <MaterialLibrary
+              trash={workspace === "trash"}
+              onAction={action}
+              revisionToken={data.latest}
+              openId={materialOpen}
+              onOpened={() => setMaterialOpen(undefined)}
+            />
+          )}
           {page?.items.length ? (
             page.items.map((item) =>
               item.kind === "note" ? (
@@ -1172,7 +1265,8 @@ export function App() {
                 if (
                   e.key === "Enter" &&
                   (e.ctrlKey || e.metaKey) &&
-                  !e.nativeEvent.isComposing
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229
                 ) {
                   e.preventDefault();
                   void capture();
@@ -1180,6 +1274,19 @@ export function App() {
               }}
             />
             <div className="composer-footer">
+              <button
+                onClick={() =>
+                  action(async () => {
+                    const ids = await window.uki.importFiles();
+                    if (ids.length)
+                      setNotice(
+                        `已保存 ${ids.length} 份原文件，可在资料页查看进度`,
+                      );
+                  })
+                }
+              >
+                添加资料…
+              </button>
               <button
                 title="将光标放入输入框后按 Win+H。听写由 Windows 处理，需要网络和麦克风；文字进入草稿后由你检查保存。"
                 onClick={() => {
@@ -1234,18 +1341,59 @@ export function App() {
           onSource={externalSource}
           onLocate={(id) =>
             action(async () => {
-              setReturnWorkspace(workspace);
+              setReturnWorkspace({
+                workspace,
+                state: {
+                  ...state,
+                  ...readingPosition(),
+                  query,
+                  searchIn,
+                  aiFilter,
+                  date: date || undefined,
+                },
+              });
+              const before = await window.uki.locateNote(id);
               await navigate("all");
-              const d = await window.uki.detail(id);
-              setQuery(d.note.title);
-              patch({ query: d.note.title, before: undefined, openIds: [id] });
+              setQuery("");
+              setAiFilter("all");
+              setDate("");
+              patch({
+                query: "",
+                before,
+                date: undefined,
+                aiFilter: "all",
+                openIds: [id],
+              });
               setResultToShow(id);
             })
           }
         />
       )}
       {taskPanel && (
-        <TaskPanel onClose={() => setTaskPanel(false)} onAction={action} />
+        <TaskPanel
+          onClose={() => setTaskPanel(false)}
+          onAction={action}
+          onOpen={(id, kind) => {
+            setTaskPanel(false);
+            action(async () => {
+              if (kind === "note") {
+                const before = await window.uki.locateNote(id);
+                await navigate("all");
+                setQuery("");
+                patch({ query: "", before, aiFilter: "all", openIds: [id] });
+                setResultToShow(id);
+              } else {
+                const task = await window.uki.taskDetail(id);
+                if (task.materialId) {
+                  await navigate("research");
+                  setMaterialOpen(task.materialId);
+                } else if (task.kind === "organize") await navigate("organize");
+                else if (task.threadId) await navigate(task.threadId);
+                else await navigate("research");
+              }
+            });
+          }}
+        />
       )}
       {settings && (
         <SettingsModal
