@@ -38,18 +38,17 @@ export function ExcerptComposer({
         if (s.draft) {
           try {
             const v = JSON.parse(s.draft);
-            if (
+            if (typeof v.raw !== "string") throw new Error("草稿格式无效");
+            setRaw(v.raw);
+            setThreadId(v.threadId ?? null);
+            if (!(
               v.quote?.sha256 === quote.sha256 &&
               v.quote?.start === quote.start &&
               v.quote?.end === quote.end &&
-              (v.quote?.text === undefined || v.quote.text === quote.text) &&
-              typeof v.raw === "string"
-            ) {
-              setRaw(v.raw);
-              setThreadId(v.threadId ?? null);
-            } else
+              v.quote?.text === quote.text
+            ))
               setError(
-                "这段资料留有另一份摘录草稿，已保留；可选回原范围后继续。",
+                "草稿的来源或提取内容需要核对。已恢复你的想法，请确认当前摘录后保存。",
               );
           } catch {
             setError("旧摘录草稿需要核对，已保留。");
@@ -72,7 +71,7 @@ export function ExcerptComposer({
         draft: JSON.stringify({
           raw: text,
           threadId: target,
-          quote: { ...quote, text: undefined },
+          quote,
         }),
         mode: "note",
         parentNoteId: null,

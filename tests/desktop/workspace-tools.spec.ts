@@ -122,9 +122,24 @@ test("0.5 workflows: compact search views, selected analysis, excerpt provenance
       .getByLabel("摘录想法", { exact: true })
       .fill("我的理解：还需要核对因果机制。");
     await reader.getByRole("button", { name: "收起草稿" }).click();
+    await page.evaluate(async () => {
+      const material = await window.uki.materialDetail(
+          (await window.uki.materialPage()).items[0].id,
+        ),
+        segment = material.segments[0];
+      const key = `excerpt:${material.id}:${segment.id}:0:${segment.text.length}:${material.sha256.slice(0, 16)}`;
+      const state = await window.uki.workspaceState(key),
+        draft = JSON.parse(state.draft);
+      draft.quote.text = "旧版本的提取片段";
+      await window.uki.workspaceState(key, {
+        ...state,
+        draft: JSON.stringify(draft),
+      });
+    });
     await reader
       .getByRole("button", { name: "摘录并记录想法", exact: true })
       .click();
+    await expect(reader).toContainText("草稿的来源或提取内容需要核对");
     await expect(reader.getByLabel("摘录想法", { exact: true })).toHaveValue(
       "我的理解：还需要核对因果机制。",
     );
