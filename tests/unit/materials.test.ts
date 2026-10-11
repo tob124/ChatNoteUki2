@@ -31,6 +31,9 @@ const open = () => {
 };
 const hash = (body: Uint8Array | string) =>
   createHash("sha256").update(body).digest("hex");
+// These are real worker integration tests: allow the per-extraction watchdog
+// to finish before Vitest aborts, including cold dependency loads on Windows CI.
+const extractTimeoutMs = 15000;
 async function extract(format: string, body: Uint8Array | string) {
   const root = mkdtempSync(join(tmpdir(), "uki-extract-test-")),
     path = join(root, "input." + format);
@@ -42,7 +45,7 @@ async function extract(format: string, body: Uint8Array | string) {
     const timeout = setTimeout(() => {
       void w.terminate();
       rej(new Error("提取超时"));
-    }, 15000);
+    }, extractTimeoutMs);
     w.once("message", (v) => {
       clearTimeout(timeout);
       void w.terminate();
@@ -83,47 +86,62 @@ function pdf() {
     `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${start}\n%%EOF`;
   return body;
 }
-it("extracts Chinese multi-page PDF with real page references", async () => {
-  const result = await extract("pdf", pdf());
-  expect(result.ok, JSON.stringify(result)).toBe(true);
-  expect(result.segments.map((s: any) => [s.page, s.text.trim()])).toEqual([
-    [1, "中文"],
-    [2, "中文"],
-  ]);
-  expect(result.coverage).toContain("2/2");
-});
-it("extracts DOCX plain text without HTML and rejects corrupt files", async () => {
-  const zip = new JSZip();
-  zip.file(
-    "[Content_Types].xml",
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
-  );
-  zip.file(
-    "word/document.xml",
-    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>这是中文资料，不是用户观点。</w:t></w:r></w:p></w:body></w:document>',
-  );
-  const result = await extract(
-    "docx",
-    await zip.generateAsync({ type: "nodebuffer" }),
-  );
-  expect(result.ok).toBe(true);
-  expect(result.segments[0].text).toContain("中文资料");
-  expect((await extract("docx", "bad document")).ok).toBe(false);
-  expect((await extract("pdf", "broken")).ok).toBe(false);
-});
-it("labels text encodings, preserves paragraph order and detects empty files", async () => {
-  const result = await extract(
-    "txt",
-    Buffer.concat([
-      Buffer.from([255, 254]),
-      Buffer.from("第一段\n\n第二段", "utf16le"),
-    ]),
-  );
-  expect(result.ok).toBe(true);
-  expect(result.coverage).toContain("UTF-16");
-  expect(result.segments.map((s: any) => s.text)).toEqual(["第一段", "第二段"]);
-  expect((await extract("md", " \n ")).ok).toBe(false);
-});
+it(
+  "extracts Chinese multi-page PDF with real page references",
+  async () => {
+    const result = await extract("pdf", pdf());
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.segments.map((s: any) => [s.page, s.text.trim()])).toEqual([
+      [1, "中文"],
+      [2, "中文"],
+    ]);
+    expect(result.coverage).toContain("2/2");
+  },
+  extractTimeoutMs + 5000,
+);
+it(
+  "extracts DOCX plain text without HTML and rejects corrupt files",
+  async () => {
+    const zip = new JSZip();
+    zip.file(
+      "[Content_Types].xml",
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    );
+    zip.file(
+      "word/document.xml",
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>这是中文资料，不是用户观点。</w:t></w:r></w:p></w:body></w:document>',
+    );
+    const result = await extract(
+      "docx",
+      await zip.generateAsync({ type: "nodebuffer" }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.segments[0].text).toContain("中文资料");
+    expect((await extract("docx", "bad document")).ok).toBe(false);
+    expect((await extract("pdf", "broken")).ok).toBe(false);
+  },
+  extractTimeoutMs * 3 + 5000,
+);
+it(
+  "labels text encodings, preserves paragraph order and detects empty files",
+  async () => {
+    const result = await extract(
+      "txt",
+      Buffer.concat([
+        Buffer.from([255, 254]),
+        Buffer.from("第一段\n\n第二段", "utf16le"),
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.coverage).toContain("UTF-16");
+    expect(result.segments.map((s: any) => s.text)).toEqual([
+      "第一段",
+      "第二段",
+    ]);
+    expect((await extract("md", " \n ")).ok).toBe(false);
+  },
+  extractTimeoutMs * 2 + 5000,
+);
 it("checkpoints material summary and yields after each step; deleted references cannot enter context", async () => {
   const { store } = open(),
     id = randomUUID(),
