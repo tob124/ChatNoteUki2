@@ -210,6 +210,8 @@ export function RecordCard({
         {note.bookmarked && <span className="hint">已收藏</span>}
         <details
           className="action-menu"
+          data-popover
+          data-close-on-action
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
@@ -417,25 +419,45 @@ export function RecordCard({
           {highlighted(short ? note.raw : note.synopsis || "待生成")}
         </p>
       </button>
-      {note.searchMatches?.map((match, index) => (
-        <p className="search-match" key={index}>
-          <span className="section-label">
-            命中{match.kind}
-            {match.revision !== undefined ? ` · v${match.revision}` : ""}
-          </span>{" "}
-          {highlighted(match.text)}
-          {match.revision !== undefined && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onEvidence({ noteId: note.id, revision: match.revision! });
-              }}
-            >
-              核对旧正文
-            </button>
-          )}
+      {!!note.searchMatches?.some((match) => match.revision === undefined) && (
+        <p className="search-hits-label">
+          命中：
+          {[
+            ...new Set(
+              note.searchMatches
+                .filter((match) => match.revision === undefined)
+                .map((match) => match.kind),
+            ),
+          ].join("、")}
         </p>
-      ))}
+      )}
+      {note.searchMatches
+        ?.filter(
+          (match) =>
+            match.revision !== undefined ||
+            ![note.title, short ? note.raw : note.synopsis].includes(
+              match.text,
+            ),
+        )
+        .map((match, index) => (
+          <p className="search-match" key={index}>
+            <span className="section-label">
+              命中{match.kind}
+              {match.revision !== undefined ? ` · v${match.revision}` : ""}
+            </span>{" "}
+            {highlighted(match.text)}
+            {match.revision !== undefined && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEvidence({ noteId: note.id, revision: match.revision! });
+                }}
+              >
+                核对旧正文
+              </button>
+            )}
+          </p>
+        ))}
       {expanded && (
         <div>{note.materialQuote && <QuoteReference noteId={note.id} />}</div>
       )}

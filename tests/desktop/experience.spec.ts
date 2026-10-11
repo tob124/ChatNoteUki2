@@ -134,6 +134,7 @@ test("0.4 everyday lifecycle: offline material, real extraction, summary, origin
     await expect(page.locator(".discussion .ai-reply")).toContainText(
       "参考资料不代表你的认同",
     );
+    await page.getByText("输入工具", { exact: true }).click();
     await page.getByRole("button", { name: "系统听写 · Win+H" }).click();
     await expect(page.getByText(/按 Win\+H 使用 Windows/)).toBeVisible();
     await page.getByLabel("写下想法").fill("关闭时必须保存的本机草稿");

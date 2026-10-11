@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { UkiApi } from "../shared";
 import type { Action } from "./RecordCard";
+import { useDialogFocus } from "./useDialogFocus";
 const states: Record<string, string> = {
   pending: "排队",
   running: "进行中",
@@ -19,6 +20,7 @@ export function TaskPanel({
   onAction: Action;
   onOpen?(id: string, kind: "note" | "task"): void;
 }) {
+  useDialogFocus();
   const ref = useRef<HTMLDialogElement>(null),
     [rows, setRows] = useState<Awaited<ReturnType<UkiApi["aiTasks"]>>>([]),
     [error, setError] = useState("");
@@ -39,7 +41,12 @@ export function TaskPanel({
     };
   }, []);
   return (
-    <dialog className="task-dialog" ref={ref} onCancel={onClose}>
+    <dialog
+      className="task-dialog"
+      aria-label="AI 任务"
+      ref={ref}
+      onCancel={onClose}
+    >
       <header>
         <h2>AI 任务</h2>
         <button onClick={onClose}>关闭</button>

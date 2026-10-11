@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { SavedQuery, SavedQueryInput } from "../workspace-tools";
 import type { Thread } from "../shared";
 export function SearchTools({
@@ -23,14 +23,6 @@ export function SearchTools({
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<string>();
   const details = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const outside = (e: PointerEvent) => {
-      if (details.current?.open && !details.current.contains(e.target as Node))
-        details.current.open = false;
-    };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, []);
   const close = () => {
     if (details.current) {
       details.current.open = false;
@@ -56,6 +48,7 @@ export function SearchTools({
   return (
     <details
       className="search-tools"
+      data-popover
       ref={details}
       onKeyDown={(e) => {
         if (e.key === "Escape") {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useDialogFocus } from "./useDialogFocus";
 import type { Note } from "../shared";
 export function SelectionAnalysis({
   notes,
@@ -9,6 +10,7 @@ export function SelectionAnalysis({
   onClose(): void;
   onQueued(id: string): void;
 }) {
+  useDialogFocus();
   const dialog = useRef<HTMLDialogElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     lock = useRef(false);
@@ -88,6 +90,7 @@ export function SelectionAnalysis({
     <dialog
       ref={dialog}
       className="context-dialog"
+      aria-label="分析所选笔记"
       onCancel={(e) => {
         if (busy) e.preventDefault();
         else onClose();

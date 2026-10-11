@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { UkiApi } from "../shared";
+import { useDialogFocus } from "./useDialogFocus";
 export function QuoteReference({ noteId }: { noteId: string }) {
   const [source, setSource] = useState<Awaited<
       ReturnType<UkiApi["quoteSource"]>
     > | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  useDialogFocus(!!source);
   const dialog = useRef<HTMLDialogElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -38,7 +40,12 @@ export function QuoteReference({ noteId }: { noteId: string }) {
       </button>
       {error && <p className="error">{error}</p>}
       {source && (
-        <dialog className="material-reader" ref={dialog} onCancel={close}>
+        <dialog
+          className="material-reader"
+          aria-label="核对参考摘录"
+          ref={dialog}
+          onCancel={close}
+        >
           <header>
             <h2>{source.quote.name}</h2>
             <button onClick={close}>关闭摘录</button>

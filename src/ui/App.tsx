@@ -37,6 +37,7 @@ import { TaskPanel } from "./TaskPanel";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { SearchTools } from "./SearchTools";
 import { SelectionAnalysis } from "./SelectionAnalysis";
+import { usePopovers } from "./usePopovers";
 import type { SavedQuery } from "../workspace-tools";
 const blank = (): WorkspaceState => ({
   draft: "",
@@ -54,12 +55,39 @@ const labels: Record<string, string> = {
   favorites: "收藏",
   trash: "回收站",
 };
+const emptyCopy: Record<string, [string, string]> = {
+  research: [
+    "还没有保存的资料分析",
+    "打开笔记或问题，点击「查找资料」。确认搜索词后才会联网查找与分析。",
+  ],
+  organize: [
+    "没有待确认的整理建议",
+    "后台整理会提出候选建议，确认后才更改归属和结构。",
+  ],
+  review: [
+    "还没有生成的回顾",
+    "在问题概览中生成线程回顾，或选择几条笔记进行分析。结果保存在这里，任务进度可在底部查看。",
+  ],
+  trash: [
+    "回收站是空的",
+    "删除的笔记会留在这里，可恢复或彻底删除，不会自动清空。",
+  ],
+  favorites: [
+    "还没有收藏的笔记",
+    "在笔记的更多操作中点击「收藏」，方便以后回来查阅。",
+  ],
+  pending: [
+    "没有待整理的笔记",
+    "归属不确定的笔记会留在这里。AI 的处理进度与失败状态可通过筛选单独查看。",
+  ],
+};
 const cleanError = (e: unknown) =>
   String(e instanceof Error ? e.message : e).replace(
     /^Error invoking remote method '[^']+': Error: /,
     "",
   );
 export function App() {
+  usePopovers();
   const [selectedTargets, setSelectedTargets] = useState<
     Record<string, string>
   >({});
@@ -240,6 +268,10 @@ export function App() {
       await Promise.all([loadPage(), loadResources()]);
     }
   }, [loadPage, loadResources]);
+  // Navigation changes the query callbacks. Keep the subscription stable so a
+  // pending notification is not discarded during that navigation.
+  const refreshLive = useRef(refresh);
+  refreshLive.current = refresh;
   useEffect(() => {
     if (!window.uki) {
       setError("请通过 Windows 桌面应用打开 ChatNoteUki");
@@ -280,7 +312,7 @@ export function App() {
     const off = window.uki.onChanged(() => {
       clearTimeout(refreshTimer.current);
       refreshTimer.current = setTimeout(
-        () => void refresh().catch((e) => setError(cleanError(e))),
+        () => void refreshLive.current().catch((e) => setError(cleanError(e))),
         120,
       );
     });
@@ -288,7 +320,7 @@ export function App() {
       off();
       clearTimeout(refreshTimer.current);
     };
-  }, [ready, refresh]);
+  }, [ready]);
   useEffect(() => {
     if (!ready) return;
     const timer = setTimeout(
@@ -590,7 +622,11 @@ export function App() {
     font = Number(prefs.font ?? 14),
     left = Number(prefs.left ?? 220),
     right = Number(prefs.right ?? 300),
-    title = labels[workspace] ?? thread?.title ?? "思考工作区";
+    hasFilter = !!query || aiFilter !== "all" || !!date,
+    title =
+      workspace === "all" && data.counts.notes > 0
+        ? "全部记录"
+        : (labels[workspace] ?? thread?.title ?? "思考工作区");
   const style = {
     "--left-width": `${left}px`,
     "--right-width": `${right}px`,
@@ -632,6 +668,7 @@ export function App() {
               <button
                 key={id}
                 className={`nav-item ${workspace === id ? "active" : ""}`}
+                aria-current={workspace === id ? "page" : undefined}
                 onClick={() => void navigate(id)}
               >
                 {label}
@@ -654,19 +691,21 @@ export function App() {
               .map((t) => (
                 <div key={t.id}>
                   <div className="tree-row">
-                    <button
-                      aria-label={`${collapsed.includes(t.id) ? "展开" : "收起"} ${t.title}`}
-                      className="tree-toggle"
-                      onClick={() => flip(t.id)}
-                    >
-                      {active.some((c) => c.parentId === t.id)
-                        ? collapsed.includes(t.id)
-                          ? "›"
-                          : "⌄"
-                        : "·"}
-                    </button>
+                    {active.some((c) => c.parentId === t.id) ? (
+                      <button
+                        aria-label={`${collapsed.includes(t.id) ? "展开" : "收起"} ${t.title}`}
+                        aria-expanded={!collapsed.includes(t.id)}
+                        className="tree-toggle"
+                        onClick={() => flip(t.id)}
+                      >
+                        {collapsed.includes(t.id) ? "›" : "⌄"}
+                      </button>
+                    ) : (
+                      <span className="tree-spacer" aria-hidden="true" />
+                    )}
                     <button
                       title={t.title}
+                      aria-current={workspace === t.id ? "page" : undefined}
                       className={`thread-item ${workspace === t.id ? "active" : ""}`}
                       onClick={() => void navigate(t.id)}
                     >
@@ -680,6 +719,7 @@ export function App() {
                         <button
                           key={c.id}
                           title={c.title}
+                          aria-current={workspace === c.id ? "page" : undefined}
                           className={`thread-item child ${workspace === c.id ? "active" : ""}`}
                           onClick={() => void navigate(c.id)}
                         >
@@ -714,6 +754,7 @@ export function App() {
           <div className="sidebar-footer">
             <button
               className={workspace === "trash" ? "active" : ""}
+              aria-current={workspace === "trash" ? "page" : undefined}
               onClick={() => void navigate("trash")}
             >
               回收站
@@ -775,18 +816,27 @@ export function App() {
               </button>
             )}
             <div>
-              <span className="eyebrow">思想工作区</span>
+              <span className="eyebrow">
+                {thread ? "持续思考的问题" : "我的记录"}
+              </span>
               <h1>{title}</h1>
             </div>
           </div>
           <div className="header-actions">
             <button
               disabled={!data.settings.hasDavPassword}
+              title={
+                data.settings.hasDavPassword
+                  ? "检查手机输入并上传本机变化"
+                  : "请先在设置中配置坚果云"
+              }
               onClick={() => action(() => window.uki.sync())}
             >
               同步
             </button>
             <button
+              aria-expanded={panel !== "closed"}
+              aria-controls="workspace-resources"
               onClick={() =>
                 patch({ panel: panel === "closed" ? "normal" : "closed" })
               }
@@ -968,6 +1018,7 @@ export function App() {
                 </button>
                 <details
                   className="bulk-more"
+                  data-popover
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       e.currentTarget.open = false;
@@ -1076,7 +1127,10 @@ export function App() {
             </button>
           )}
           {(state.before || date) && <button onClick={latest}>回到最新</button>}
-          <span>{page?.total ?? "…"} 个记录单元 · 每页最多 30</span>
+          <span>
+            {page?.total ?? "…"} 项
+            {(page?.total ?? 0) > 30 ? " · 每页 30 项" : ""}
+          </span>
           <label>
             定位日期
             <input
@@ -1278,39 +1332,50 @@ export function App() {
             <div className="empty-state">
               <div className="empty-symbol">✧</div>
               <h2>
-                {query
+                {hasFilter
                   ? "还没找到相关记录"
-                  : workspace === "research"
-                    ? "还没有保存的资料分析"
-                    : workspace === "organize"
-                      ? "留出时间，慢慢整理"
-                      : workspace === "review"
-                        ? "还没有生成的回顾"
-                        : "一个问题，可以想很久"}
+                  : (emptyCopy[workspace]?.[0] ?? "一个问题，可以想很久")}
               </h2>
               <p>
-                {query
-                  ? "试试更短的关键词，或切换原文与 AI 回应的搜索范围。"
-                  : workspace === "research"
-                    ? "打开一条笔记或进入具体问题，点击「查找资料」。确认可公开的搜索词后，AI 才会联网查找并分析。"
-                    : workspace === "pending"
-                      ? "归属不确定的记录在这里。AI 失败状态可单独筛选。"
-                      : workspace === "organize"
-                        ? "后台整理会提出候选建议，确认后才更改归属和结构。"
-                        : workspace === "review"
-                          ? "进入一个具体问题，在右侧点击「生成线程回顾」。成功生成后会保存在这里；等待和失败的任务不会变成回顾条目。"
-                          : "想到什么，先写下来。原话、变化和依据都能留住。"}
+                {hasFilter
+                  ? "试试更短的关键词，或清除处理状态与日期条件。"
+                  : (emptyCopy[workspace]?.[1] ??
+                    "想到什么，先写下来。原话、变化和依据都能留住。")}
               </p>
-              {!data.settings.hasApiKey && (
-                <button onClick={() => setSettings(true)}>配置 DeepSeek</button>
+              {hasFilter && (
+                <button
+                  onClick={() => {
+                    setQuery("");
+                    setAiFilter("all");
+                    setDate("");
+                    patch({
+                      query: "",
+                      aiFilter: "all",
+                      date: undefined,
+                      before: undefined,
+                      savedQueryId: undefined,
+                      anchor: undefined,
+                    });
+                  }}
+                >
+                  清除查找条件
+                </button>
               )}
+              {!data.settings.hasApiKey &&
+                !["trash", "favorites"].includes(workspace) && (
+                  <button onClick={() => setSettings(true)}>
+                    配置 DeepSeek
+                  </button>
+                )}
             </div>
           )}
         </div>
         {(!["review", "research", "trash", "favorites"].includes(workspace) ||
           !!state.draft) && (
           <div className="composer">
-            {workspace === "review" && (
+            {["review", "research", "trash", "favorites"].includes(
+              workspace,
+            ) && (
               <p className="hint">
                 这是此页保存的未发送草稿。保存为新想法后，可在「全部记录」查看。
               </p>
@@ -1350,32 +1415,49 @@ export function App() {
               }}
             />
             <div className="composer-footer">
-              <button
-                onClick={() =>
-                  action(async () => {
-                    const ids = await window.uki.importFiles();
-                    if (ids.length)
-                      setNotice(
-                        `已保存 ${ids.length} 份原文件，可在资料页查看进度`,
-                      );
-                  })
-                }
-              >
-                添加资料…
-              </button>
-              <button
-                title="将光标放入输入框后按 Win+H。听写由 Windows 处理，需要网络和麦克风；文字进入草稿后由你检查保存。"
-                onClick={() => {
-                  document
-                    .getElementById("capture")
-                    ?.focus({ preventScroll: true });
-                  setNotice(
-                    "按 Win+H 使用 Windows 系统听写，需要网络和麦克风。文字进入草稿，请检查后再保存。",
-                  );
-                }}
-              >
-                系统听写 · Win+H
-              </button>
+              <div className="composer-tools">
+                <button
+                  onClick={() =>
+                    action(async () => {
+                      const ids = await window.uki.importFiles();
+                      if (ids.length)
+                        setNotice(
+                          `已保存 ${ids.length} 份原文件，可在资料页查看进度`,
+                        );
+                    })
+                  }
+                >
+                  添加资料…
+                </button>
+                <details
+                  className="input-tools"
+                  data-popover
+                  data-close-on-action
+                >
+                  <summary>输入工具</summary>
+                  <div className="menu-items">
+                    <button
+                      title="将光标放入输入框后按 Win+H。听写由 Windows 处理，需要网络和麦克风；文字进入草稿后由你检查保存。"
+                      onClick={(e) => {
+                        const menu =
+                          e.currentTarget.closest<HTMLDetailsElement>(
+                            "details",
+                          );
+                        if (menu) menu.open = false;
+                        document
+                          .getElementById("capture")
+                          ?.focus({ preventScroll: true });
+                        setNotice(
+                          "按 Win+H 使用 Windows 系统听写，需要网络和麦克风。文字进入草稿，请检查后再保存。",
+                        );
+                      }}
+                    >
+                      系统听写 · Win+H
+                    </button>
+                    <p className="hint">文字进入草稿，更正后再保存。</p>
+                  </div>
+                </details>
+              </div>
               <span>
                 {saving ? "保存原文…" : "草稿仅本机保存 · Ctrl + Enter"}
               </span>
@@ -1402,7 +1484,21 @@ export function App() {
           reference={reference}
           externalReference={externalReference}
           panel={panel}
-          onPanel={(p) => patch({ panel: p })}
+          onPanel={(p) => {
+            patch({ panel: p });
+            if (p === "closed" || panel === "max")
+              requestAnimationFrame(() => {
+                const target =
+                  p === "closed"
+                    ? document.querySelector<HTMLElement>(
+                        'button[aria-controls="workspace-resources"]',
+                      )
+                    : document.querySelector<HTMLElement>(
+                        '#workspace-resources button[aria-label="最大化资料"]',
+                      );
+                target?.focus({ preventScroll: true });
+              });
+          }}
           onClear={() => {
             setReference(null);
             setExternalReference(null);
@@ -1499,7 +1595,7 @@ export function App() {
           }}
         />
       )}
-      <details className="reading-preferences">
+      <details className="reading-preferences" data-popover>
         <summary aria-label="阅读设置">Aa</summary>
         <label>
           字号

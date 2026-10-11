@@ -68,7 +68,9 @@ export function ResourcesPanel({
     <>
       <header className="resource-header">
         <div>
-          <span className="eyebrow">随时查阅</span>
+          <span className="eyebrow">
+            {reference || externalReference ? "核对依据" : "随时查阅"}
+          </span>
           <h2>
             {externalReference
               ? "来源核对"
@@ -198,23 +200,43 @@ export function ResourcesPanel({
                   {data.count} 条记录 ·{" "}
                   {data.thread.archived ? "历史资料" : "活动问题"}
                 </p>
-                <button onClick={() => onManage(data.thread!)}>管理问题</button>
-                <button
-                  onClick={() =>
-                    onAction(() =>
-                      window.uki.pin(data.thread!.id, !data.thread!.pinned),
+                <details
+                  className="question-actions"
+                  data-popover
+                  data-close-on-action
+                  onClick={(e) => {
+                    if (
+                      e.target instanceof HTMLElement &&
+                      e.target.closest("button")
                     )
-                  }
+                      e.currentTarget.open = false;
+                  }}
                 >
-                  {data.thread.pinned ? "取消置顶" : "置顶问题"}
-                </button>
-                <button
-                  onClick={() =>
-                    onAction(() => window.uki.exportNotes([], data.thread!.id))
-                  }
-                >
-                  导出此问题…
-                </button>
+                  <summary>问题操作</summary>
+                  <div className="menu-items">
+                    <button onClick={() => onManage(data.thread!)}>
+                      管理问题
+                    </button>
+                    <button
+                      onClick={() =>
+                        onAction(() =>
+                          window.uki.pin(data.thread!.id, !data.thread!.pinned),
+                        )
+                      }
+                    >
+                      {data.thread.pinned ? "取消置顶" : "置顶问题"}
+                    </button>
+                    <button
+                      onClick={() =>
+                        onAction(() =>
+                          window.uki.exportNotes([], data.thread!.id),
+                        )
+                      }
+                    >
+                      导出此问题…
+                    </button>
+                  </div>
+                </details>
                 <section className="resource-section">
                   <span className="section-label">
                     已确认认知 · v{data.cognition.version}
@@ -247,16 +269,19 @@ export function ResourcesPanel({
                   />
                 )}
                 {!data.thread.archived && (
-                  <ResearchControls
-                    key={`research:${data.thread.id}`}
-                    threadId={data.thread.id}
-                    title={data.thread.title}
-                    tasks={tasks}
-                    hasApiKey={hasApiKey}
-                    onAction={onAction}
-                    onResult={onResult}
-                    onSource={onSource}
-                  />
+                  <section className="resource-section resource-research">
+                    <h3>参考资料</h3>
+                    <ResearchControls
+                      key={`research:${data.thread.id}`}
+                      threadId={data.thread.id}
+                      title={data.thread.title}
+                      tasks={tasks}
+                      hasApiKey={hasApiKey}
+                      onAction={onAction}
+                      onResult={onResult}
+                      onSource={onSource}
+                    />
+                  </section>
                 )}
                 {data.recaps.map((r) => (
                   <details
@@ -305,6 +330,10 @@ export function ResourcesPanel({
     return (
       <dialog
         className="reading-layer"
+        id="workspace-resources"
+        aria-label={
+          reference ? "原文引用" : externalReference ? "来源核对" : "问题概览"
+        }
         ref={dialog}
         onCancel={(e) => {
           e.preventDefault();
@@ -317,6 +346,7 @@ export function ResourcesPanel({
   return (
     <aside
       className={`resources-panel ${panel === "wide" ? "wide" : ""}`}
+      id="workspace-resources"
       aria-label="备查资料"
     >
       {content}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Bootstrap, Settings, UkiApi, InboxBatch } from "../shared";
+import { useDialogFocus } from "./useDialogFocus";
 export function SettingsModal({
   data,
   onClose,
@@ -9,6 +10,7 @@ export function SettingsModal({
   onClose(): void;
   onAction(action: () => Promise<unknown>): void;
 }) {
+  useDialogFocus();
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings>({
     hardBudget: data.settings.hardBudget,
@@ -61,12 +63,20 @@ export function SettingsModal({
     <dialog
       ref={dialog}
       className="settings-dialog"
+      aria-label="设置与数据"
       onCancel={(e) => {
         e.preventDefault();
         close();
       }}
     >
       <form
+        onInvalidCapture={(e) => {
+          // Reveal an invalid advanced field before native validation focuses it.
+          if (e.target instanceof HTMLElement) {
+            const section = e.target.closest<HTMLDetailsElement>("details");
+            if (section) section.open = true;
+          }
+        }}
         onSubmit={(e) => {
           e.preventDefault();
           if (busy) return;
@@ -121,26 +131,7 @@ export function SettingsModal({
           </p>
         )}
         <h3>DeepSeek</h3>
-        <label>
-          结构建议敏感度
-          <select
-            value={settings.structureSensitivity}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                structureSensitivity: e.target
-                  .value as Settings["structureSensitivity"],
-              })
-            }
-          >
-            {["保守", "均衡", "积极"].map((v) => (
-              <option key={v}>{v}</option>
-            ))}
-          </select>
-        </label>
-        <p className="hint">
-          只影响问题的新建、合并和层级建议，不按日期限额。历史整理共用每日预算，新记录和主动讨论优先。
-        </p>
+
         <label>
           API key{" "}
           <span className="muted">
@@ -157,68 +148,94 @@ export function SettingsModal({
         <p className="hint">
           自动处理只使用 Flash。原文先保存，一次调用生成分类、标题、概述与回应。
         </p>
-        <div className="budget-fields">
+        <details className="settings-advanced">
+          <summary>整理与 AI 高级设置</summary>
           <label>
-            每日输入提醒阈值（tokens）
+            结构建议敏感度
+            <select
+              value={settings.structureSensitivity}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  structureSensitivity: e.target
+                    .value as Settings["structureSensitivity"],
+                })
+              }
+            >
+              {["保守", "均衡", "积极"].map((v) => (
+                <option key={v}>{v}</option>
+              ))}
+            </select>
+          </label>
+          <p className="hint">
+            只影响问题的新建、合并和层级建议，不按日期限额。历史整理共用每日预算，新记录和主动讨论优先。
+          </p>
+        </details>
+        <details className="settings-advanced">
+          <summary>用量提醒与上下文容量</summary>
+          <div className="budget-fields">
+            <label>
+              每日输入提醒阈值（tokens）
+              <input
+                type="number"
+                min={8000}
+                max={10000000}
+                value={settings.dailyInputLimit}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    dailyInputLimit: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+            <label>
+              每日输出提醒阈值（tokens）
+              <input
+                type="number"
+                min={1000}
+                max={1000000}
+                value={settings.dailyOutputLimit}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    dailyOutputLimit: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+          </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.hardBudget}
+              onChange={(e) =>
+                setSettings({ ...settings, hardBudget: e.target.checked })
+              }
+            />
+            启用每日硬上限（达到阈值后暂停请求）
+          </label>
+          <label>
+            上下文容量（tokens）
             <input
               type="number"
               min={8000}
-              max={10000000}
-              value={settings.dailyInputLimit}
+              max={131072}
+              step={1}
+              value={settings.contextTokens}
               onChange={(e) =>
                 setSettings({
                   ...settings,
-                  dailyInputLimit: Number(e.target.value),
+                  contextTokens: Number(e.target.value),
                 })
               }
             />
           </label>
-          <label>
-            每日输出提醒阈值（tokens）
-            <input
-              type="number"
-              min={1000}
-              max={1000000}
-              value={settings.dailyOutputLimit}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  dailyOutputLimit: Number(e.target.value),
-                })
-              }
-            />
-          </label>
-        </div>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={settings.hardBudget}
-            onChange={(e) =>
-              setSettings({ ...settings, hardBudget: e.target.checked })
-            }
-          />
-          启用每日硬上限（达到阈值后暂停请求）
-        </label>
-        <label>
-          上下文容量（tokens）
-          <input
-            type="number"
-            min={8000}
-            max={131072}
-            step={1}
-            value={settings.contextTokens}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                contextTokens: Number(e.target.value),
-              })
-            }
-          />
-        </label>
-        <p className="hint">
-          默认阈值只提醒。输入使用随安装包提供的离线 tokenizer 估算，实际用量以
-          API 返回为准；计费不明的中断等待手动重试。
-        </p>
+          <p className="hint">
+            默认阈值只提醒。输入使用随安装包提供的离线 tokenizer
+            估算，实际用量以 API 返回为准；计费不明的中断等待手动重试。
+          </p>
+        </details>
         <h3>坚果云 WebDAV</h3>
         <label>
           服务器地址
@@ -303,12 +320,7 @@ export function SettingsModal({
           秒自动上传；网络失败时逐步延长重试间隔，最多 15
           分钟。应用关闭时不运行，关闭自动同步后仍可点击「同步」。
         </p>
-        <div className="settings-footer">
-          <button className="primary" type="submit">
-            保存设置
-          </button>
-          <span className="muted">凭据只加密保存在本机</span>
-        </div>
+
         <hr />
         <h3>换机恢复</h3>
         <p className="hint">
@@ -469,6 +481,12 @@ export function SettingsModal({
             </p>
           ))}
         </details>
+        <div className="settings-footer">
+          <button className="primary" type="submit" disabled={busy}>
+            保存设置
+          </button>
+          <span className="muted">凭据只加密保存在本机</span>
+        </div>
       </form>
     </dialog>
   );

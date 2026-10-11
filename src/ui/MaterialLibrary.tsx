@@ -276,7 +276,12 @@ export function MaterialLibrary({
         )}
       </div>
       {detail && (
-        <dialog ref={dialog} className="material-reader" onCancel={close}>
+        <dialog
+          ref={dialog}
+          className="material-reader"
+          aria-label={detail.name}
+          onCancel={close}
+        >
           <header>
             <div>
               <span className="section-label">参考资料</span>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Thread } from "../shared";
 import type { Action } from "./RecordCard";
+import { useDialogFocus } from "./useDialogFocus";
 export function ThreadDialog({
   thread,
   threads,
@@ -12,6 +13,7 @@ export function ThreadDialog({
   onAction: Action;
   onClose(): void;
 }) {
+  useDialogFocus();
   const ref = useRef<HTMLDialogElement>(null),
     [title, setTitle] = useState(thread?.title ?? ""),
     [description, setDescription] = useState(thread?.description ?? ""),
@@ -36,6 +38,7 @@ export function ThreadDialog({
   return (
     <dialog
       className="thread-dialog"
+      aria-label={thread ? "管理问题" : "新建问题"}
       ref={ref}
       onCancel={(e) => {
         e.preventDefault();

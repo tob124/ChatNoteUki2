@@ -59,16 +59,22 @@ export function AnalysisControls({
   };
   return (
     <div className="analysis-controls">
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={pro}
-          onChange={(e) => setPro(e.target.checked)}
-          disabled={!!submitting}
-        />
-        本次主动分析使用 Pro
-      </label>
-      {(["cognition", "recap"] as const).map((kind) => {
+      <div className="analysis-heading">
+        <h3>AI 分析</h3>
+        <details className="analysis-options">
+          <summary>模型选项{pro ? " · Pro" : " · Flash"}</summary>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={pro}
+              onChange={(e) => setPro(e.target.checked)}
+              disabled={!!submitting}
+            />
+            本次主动分析使用 Pro
+          </label>
+        </details>
+      </div>
+      {(["recap", "cognition"] as const).map((kind) => {
         const task = taskFor(kind),
           active =
             !!task && ["pending", "running", "budget"].includes(task.status),
@@ -94,6 +100,15 @@ export function AnalysisControls({
             <button
               onClick={() => start(kind)}
               disabled={!hasApiKey || !count || busy || active}
+              title={
+                !hasApiKey
+                  ? "请先在设置中配置 DeepSeek"
+                  : !count
+                    ? "请先在这个问题中添加笔记"
+                    : active
+                      ? "已有任务正在执行，可查看下方进度"
+                      : undefined
+              }
             >
               {label}
             </button>

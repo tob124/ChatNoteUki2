@@ -96,7 +96,11 @@ try {
     readdirSync(join(folder, "backups")).some((f) =>
       f.startsWith(`before-${targetVersion}-`),
     );
-  if (oldVersion !== version) assert.ok(backupCreated);
+  // Patch releases can polish the renderer without changing the data format.
+  const backupRequired =
+    oldVersion.split(".").slice(0, 2).join(".") !==
+    version.split(".").slice(0, 2).join(".");
+  if (backupRequired) assert.ok(backupCreated);
   await page.getByLabel("写下想法").fill("升级后的离线记录");
   await page.getByRole("button", { name: "保存想法", exact: true }).click();
   await page.getByLabel("写下想法").fill("退出前的未提交草稿");
@@ -121,6 +125,7 @@ try {
     cognitionPreserved: true,
     credentialsUnchanged: true,
     backupCreated,
+    backupRequired,
     draftAndOfflineRestart: true,
     paidAiCalls: 0,
   };

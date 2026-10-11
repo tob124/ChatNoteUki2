@@ -29,7 +29,7 @@ test("new content is scoped, latest-page refresh preserves its workspace and rev
       page.getByRole("heading", { name: "还没有生成的回顾" }),
     ).toBeVisible();
     await expect(
-      page.getByText("成功生成后会保存在这里", { exact: false }),
+      page.getByText("结果保存在这里，任务进度可在底部查看", { exact: false }),
     ).toBeVisible();
     const ids = await page.evaluate(async () => {
       const thread = await window.uki.thread({

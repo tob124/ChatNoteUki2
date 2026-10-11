@@ -1,4 +1,6 @@
-# ChatNoteUki 0.5.0
+# ChatNoteUki 0.5.1
+
+0.5.1 修整日常界面：页面与空状态说明、集中输入工具、问题操作菜单、右栏分组、高级设置收起、菜单和弹窗焦点。也修复切换页面时丢失待刷新通知的问题。详见 [界面修整与验证](docs/UIUX-0.5.1.md)。保持现有资料格式及功能范围。
 
 0.5.0 的 [升级与使用说明](docs/UPGRADE-0.5.0.md) 和 [交付检查](docs/IMPLEMENTATION-0.5.0.md)。保留 [Flownote 代码对照](docs/FLOWNOTE-COMPARISON.md) 与 [15 张功能候选卡](docs/NEXT-FEATURE-CANDIDATES.md)，本轮实现保存查询、摘录想法和所选笔记分析。
 
@@ -6,9 +8,9 @@
 
 ## 安装和升级
 
-从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.5.0-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
+从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.5.1-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
 
-升级前自动创建 `backups/before-0.5.0-*.db`。现有正文、更正、人工标题和归属、认知、草稿及凭据保留，不重复已经完成的旧原文重导。云端格式升级为 **6**，继续读取 1–5，旧程序不能继续维护格式 6。详见 [升级说明](docs/UPGRADE-0.5.0.md)。
+首次升级到 0.5 系列前自动创建 `backups/before-0.5.0-*.db`；0.5.0 → 0.5.1 不做资料迁移。现有正文、更正、人工标题和归属、认知、草稿及凭据保留，不重复已经完成的旧原文重导。云端格式仍为 **6**，继续读取 1–5，旧程序不能继续维护格式 6。详见 [升级说明](docs/UPGRADE-0.5.0.md)。
 
 API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 Windows 用户本机保存，不进入源码、日志或云端备份。思想数据以可读 JSON、文本和文件通过 HTTPS 托管到坚果云，并非端到端加密。凭据和未提交草稿不随换机恢复。
 
