@@ -55,7 +55,7 @@ test("empty-cloud ownership repair and automatic upload/inbox import with persis
         if (url.hostname !== "mock.invalid")
           throw new Error("Unexpected test network request");
         const path = url.pathname
-          .replace("/dav/ChatNoteUki/", "")
+          .replace("/dav/ChatNoteUki-Glass/", "")
           .replace(/\/$/, "");
         const method = init?.method ?? "GET";
         const headers = new Headers(init?.headers);

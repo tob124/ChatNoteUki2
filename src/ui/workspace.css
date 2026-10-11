@@ -1,0 +1,302 @@
+/* Experimental control plane. Reading surfaces stay opaque in both appearances. */
+.app-shell {
+  background: #eef1f5;
+}
+.app-shell button {
+  min-height: 28px;
+  padding: 3px 9px;
+  touch-action: manipulation;
+}
+.main-pane {
+  padding: 14px 22px 6px;
+}
+.main-header {
+  margin-bottom: 8px;
+  gap: 10px;
+}
+.main-header h1 {
+  font-size: 19px;
+  line-height: 1.4;
+}
+.heading-left .eyebrow {
+  display: none;
+}
+.search-row {
+  margin-bottom: 3px;
+}
+.search-row input {
+  padding: 6px 10px;
+}
+.page-bar {
+  padding: 4px 0 6px;
+  min-height: 34px;
+}
+.date-jump {
+  margin-left: auto;
+  position: relative;
+}
+.date-jump > summary {
+  cursor: pointer;
+  padding: 3px 7px;
+}
+.date-jump[open] label {
+  position: absolute;
+  z-index: 5;
+  right: 0;
+  top: 30px;
+  width: 195px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 8px 24px #25344914;
+}
+.sidebar {
+  padding: 16px 9px 9px;
+}
+.brand {
+  margin-bottom: 15px;
+}
+.nav-item,
+.thread-item {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.records {
+  padding-top: 5px;
+}
+.record-open {
+  padding-top: 10px;
+}
+.record-open .record-meta {
+  padding-right: 96px;
+}
+.record-meta {
+  gap: 8px;
+}
+.card-tools {
+  top: 7px;
+  gap: 5px;
+}
+.record h2 {
+  margin: 5px 0;
+}
+.record-actions {
+  gap: 6px;
+  margin-top: 8px;
+}
+.composer {
+  padding: 8px 12px;
+  margin: 6px 0 2px;
+}
+.composer textarea {
+  min-height: 42px;
+  height: 42px;
+  max-height: 160px;
+  field-sizing: content;
+  padding: 8px 0;
+  background: transparent;
+}
+.composer-footer {
+  gap: 6px;
+}
+.composer-footer button {
+  padding: 3px 9px;
+}
+.composer-footer > span {
+  font-size: 12px;
+}
+.sync-status {
+  padding-top: 3px;
+  min-height: 24px;
+}
+.thread-workbench {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+.thread-workbench > .question-actions {
+  margin: 0;
+}
+.thread-editor {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.analysis-controls.compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+.analysis-controls.compact .analysis-heading {
+  order: 3;
+  margin: 0;
+}
+.analysis-controls.compact .analysis-task {
+  padding: 0;
+  margin: 0;
+}
+.analysis-controls.compact .analysis-options {
+  width: auto;
+}
+.analysis-controls.compact .analysis-progress {
+  max-width: 230px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  margin-top: 3px;
+}
+.analysis-progress > summary {
+  cursor: pointer;
+  font-weight: 400;
+  font-size: 12px;
+}
+.analysis-controls.compact > .hint {
+  margin: 4px 0;
+}
+.research-controls {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 12px;
+}
+.research-controls > .hint {
+  margin: 4px 0;
+}
+.research-controls > button + button {
+  margin-left: 5px;
+}
+.research-controls .quiet {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.research-controls form {
+  width: min(450px, 100%);
+  background: #f5f7fa;
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 8px;
+}
+.note-analysis-tools,
+.note-thought-controls {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.note-analysis-tools {
+  margin-top: 8px;
+}
+.note-thought-controls:has(.note-thought-result),
+.note-thought-result {
+  flex-basis: 100%;
+}
+.assignment-suggestion {
+  margin: 6px 8px;
+  padding: 8px 10px;
+  background: #f1f6fc;
+  border: 1px solid #dce7f5;
+  border-radius: 10px;
+  font-size: 12px;
+}
+.assignment-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.assignment-line > span {
+  flex: 1;
+  min-width: 140px;
+}
+.assignment-line details {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+.assignment-line details > summary {
+  cursor: pointer;
+}
+.resource-header {
+  padding: 17px 14px 12px;
+}
+.resource-scroll {
+  padding: 14px;
+}
+.resource-section {
+  margin-top: 18px;
+}
+.appearance-glass .sidebar {
+  margin: 8px 0 8px 8px;
+  border: 1px solid #ffffff;
+  border-radius: 18px;
+  background: #ffffff99;
+  box-shadow: 0 4px 18px #26384908;
+}
+.appearance-glass .header-actions,
+.appearance-glass .composer {
+  border: 1px solid #dce2ea;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #fffffff2, #f0f4f7de);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 4px 14px #22334c0c;
+  backdrop-filter: blur(10px);
+}
+.appearance-glass .header-actions {
+  padding: 3px;
+  border-radius: 24px;
+}
+.appearance-glass .header-actions button {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 18px;
+}
+.appearance-glass .composer .primary {
+  border-radius: 16px;
+}
+.appearance-glass .new-thought,
+.appearance-glass .nav-item.active,
+.appearance-glass .thread-item.active {
+  border-radius: 12px;
+}
+.reduced-transparency .sidebar,
+.reduced-transparency .header-actions,
+.reduced-transparency .composer {
+  background: #f4f6f9;
+  backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .appearance-glass .sidebar,
+  .appearance-glass .header-actions,
+  .appearance-glass .composer {
+    background: Canvas;
+    backdrop-filter: none;
+    border-color: ButtonBorder;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .appearance-glass .header-actions button:hover {
+    background: #e7edf3;
+  }
+}
+@media (pointer: coarse) {
+  .app-shell button,
+  .app-shell summary {
+    min-height: 36px;
+  }
+}
+@media (max-width: 1280px) {
+  .main-pane {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}

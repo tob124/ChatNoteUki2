@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AiTask } from "../shared";
 import type { Action } from "./RecordCard";
 export function ResearchControls({
@@ -28,6 +28,7 @@ export function ResearchControls({
     [submitting, setSubmitting] = useState(false),
     [error, setError] = useState("");
   const key = `research:${noteId ?? threadId}`;
+  const lock = useRef(false);
   useEffect(() => {
     let active = true;
     void window.uki
@@ -87,28 +88,77 @@ export function ResearchControls({
   const status = submitting
     ? "正在提交…"
     : task?.status === "running"
-      ? {
-          search: "正在检索公开资料…",
-          read: "正在读取来源正文…",
-          analyze: "正在分析资料与想法…",
-          queued: "正在准备…",
-          done: "正在保存结果…",
-        }[task.researchStage ?? "queued"]
+      ? task.research?.automatic && !task.research.planned
+        ? "正在提炼公开检索词…"
+        : {
+            search: "正在检索公开资料…",
+            read: "正在读取来源正文…",
+            analyze: "正在分析资料与想法…",
+            queued: "正在准备…",
+            done: "正在保存结果…",
+          }[task.researchStage ?? "queued"]
       : task?.status === "pending"
         ? "已排队，等待查找资料"
         : task?.status === "budget"
           ? "今日预算不足，明日继续；已完成的步骤会保留"
-          : task?.status === "done"
-            ? "资料分析完成"
-            : task?.status === "failed"
-              ? "资料分析未完成"
-              : task?.status === "cancelled"
-                ? "已取消"
-                : "";
+          : task?.status === "partial"
+            ? "资料分析部分完成"
+            : task?.status === "done"
+              ? "资料分析完成"
+              : task?.status === "failed"
+                ? "资料分析未完成"
+                : task?.status === "cancelled"
+                  ? "已取消"
+                  : "";
+  const start = (automatic: boolean) => {
+    if (lock.current || busy || !hasApiKey) return;
+    lock.current = true;
+    setSubmitting(true);
+    setError("");
+    onAction(async () => {
+      try {
+        const id = automatic
+          ? await window.uki.researchAuto(
+              noteId ? { noteId } : { threadId: threadId! },
+            )
+          : await window.uki.research({
+              noteId,
+              threadId,
+              question,
+              queries: queries
+                .split(/\r?\n/)
+                .map((q) => q.trim())
+                .filter(Boolean),
+            });
+        setReceipt(id);
+        setOpen(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        lock.current = false;
+        setSubmitting(false);
+      }
+    });
+  };
   return (
     <section className="research-controls">
-      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        查找资料
+      <button
+        onClick={() => start(true)}
+        disabled={busy || !hasApiKey}
+        title={
+          !hasApiKey
+            ? "请先配置 DeepSeek"
+            : "会联网。AI 从当前对象提炼公开检索词，再查找并核对来源；无需重新填写问题。"
+        }
+      >
+        外部资料查证
+      </button>
+      <button
+        className="quiet"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        自定义查证
       </button>
       {status && (
         <p role="status" className="hint">
@@ -132,10 +182,10 @@ export function ResearchControls({
           ))}
         </details>
       )}
-      {task?.status === "done" && task.resultId && (
+      {task && ["done", "partial"].includes(task.status) && task.resultId && (
         <button onClick={() => onResult(task)}>查看资料分析</button>
       )}
-      {task && ["failed", "budget"].includes(task.status) && (
+      {task && ["failed", "budget", "partial"].includes(task.status) && (
         <button onClick={() => onAction(() => window.uki.retryTask(task.id))}>
           重试资料分析
         </button>
@@ -151,27 +201,7 @@ export function ResearchControls({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            setSubmitting(true);
-            setError("");
-            onAction(async () => {
-              try {
-                const id = await window.uki.research({
-                  noteId,
-                  threadId,
-                  question,
-                  queries: queries
-                    .split(/\r?\n/)
-                    .map((q) => q.trim())
-                    .filter(Boolean),
-                });
-                setReceipt(id);
-              } catch (e) {
-                setError(String(e instanceof Error ? e.message : e));
-                throw e;
-              } finally {
-                setSubmitting(false);
-              }
-            });
+            start(false);
           }}
         >
           <p className="hint">
@@ -219,6 +249,11 @@ export function ResearchControls({
             确认搜索并分析
           </button>
         </form>
+      )}
+      {!open && error && (
+        <p role="alert" className="error-text">
+          {error}
+        </p>
       )}
     </section>
   );

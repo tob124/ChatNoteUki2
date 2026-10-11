@@ -80,6 +80,8 @@ const api: UkiApi = {
     ipcRenderer.invoke("uki:moveBatch", ids, threadId),
   undoMove: (id) => ipcRenderer.invoke("uki:undoMove", id),
   research: (input) => ipcRenderer.invoke("uki:research", input),
+  researchAuto: (input) => ipcRenderer.invoke("uki:researchAuto", input),
+  recapDetail: (id) => ipcRenderer.invoke("uki:recapDetail", id),
   researchDetail: (id) => ipcRenderer.invoke("uki:researchDetail", id),
   researchSource: (id, sourceId) =>
     ipcRenderer.invoke("uki:researchSource", id, sourceId),

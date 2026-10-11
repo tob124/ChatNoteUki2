@@ -7,6 +7,8 @@ const object = (
 ) => ({ type: "object", properties, required, additionalProperties: false });
 const evidence = object({ noteId: text, revision: { type: "integer" } });
 export function outputSchema(prompt: string): Record<string, unknown> {
+  if (prompt.includes("research-query-plan"))
+    return object({ question: text, queries: strings });
   if (prompt.includes("material-summary"))
     return object({
       summary: text,

@@ -1,9 +1,31 @@
 import { z } from "zod";
+export const researchPlanSchema = z.object({
+  question: z.string().trim().min(3).max(300),
+  queries: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(2)
+        .max(180)
+        .refine(
+          (q) =>
+            !/[\w.+-]+@[\w.-]+\.[a-z]{2,}|\bsk-[\w-]+|\b1[3-9]\d{9}\b|\b\d{17}[\dXx]\b/i.test(
+              q,
+            ),
+          "公开检索词包含联系方式、证件号或密钥，请移除私人标识",
+        ),
+    )
+    .min(1)
+    .max(2),
+});
 
 export const researchInputSchema = z
   .object({
     noteId: z.string().uuid().nullable().default(null),
     threadId: z.string().uuid().nullable().default(null),
+    automatic: z.boolean().optional(),
+    planned: z.boolean().optional(),
     question: z.string().trim().min(3).max(300),
     queries: z.array(z.string().trim().min(2).max(180)).min(1).max(2),
   })

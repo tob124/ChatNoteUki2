@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { CognitionEditor } from "./CognitionEditor";
 import type {
   Evidence,
   Cognition,
@@ -11,8 +10,6 @@ import type {
 } from "../shared";
 import { CognitionContent, RecapContent } from "./WorkUnits";
 import { dateLabel, type Action } from "./RecordCard";
-import { AnalysisControls } from "./AnalysisControls";
-import { ResearchControls } from "./ResearchControls";
 import type { ResearchSource } from "../research";
 export type ExternalReference = { source: ResearchSource };
 export type Reference = {
@@ -28,6 +25,7 @@ export function ResourcesPanel({
   onEvidence,
   onAction,
   onManage,
+  onEditCognition,
   tasks,
   hasApiKey,
   onSettings,
@@ -44,6 +42,7 @@ export function ResourcesPanel({
   onEvidence(r: Evidence): void;
   onAction: Action;
   onManage(thread: Thread): void;
+  onEditCognition(): void;
   tasks: AiTask[];
   hasApiKey: boolean;
   onSettings(): void;
@@ -60,7 +59,6 @@ export function ResourcesPanel({
     return () => dialog.current?.close();
   }, [panel]);
   const data = resources;
-  const [editingCognition, setEditingCognition] = useState(false);
   const recapTask = tasks
     .filter((t) => t.threadId === data?.thread?.id && t.kind === "recap")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -200,89 +198,15 @@ export function ResourcesPanel({
                   {data.count} 条记录 ·{" "}
                   {data.thread.archived ? "历史资料" : "活动问题"}
                 </p>
-                <details
-                  className="question-actions"
-                  data-popover
-                  data-close-on-action
-                  onClick={(e) => {
-                    if (
-                      e.target instanceof HTMLElement &&
-                      e.target.closest("button")
-                    )
-                      e.currentTarget.open = false;
-                  }}
-                >
-                  <summary>问题操作</summary>
-                  <div className="menu-items">
-                    <button onClick={() => onManage(data.thread!)}>
-                      管理问题
-                    </button>
-                    <button
-                      onClick={() =>
-                        onAction(() =>
-                          window.uki.pin(data.thread!.id, !data.thread!.pinned),
-                        )
-                      }
-                    >
-                      {data.thread.pinned ? "取消置顶" : "置顶问题"}
-                    </button>
-                    <button
-                      onClick={() =>
-                        onAction(() =>
-                          window.uki.exportNotes([], data.thread!.id),
-                        )
-                      }
-                    >
-                      导出此问题…
-                    </button>
-                  </div>
-                </details>
                 <section className="resource-section">
                   <span className="section-label">
                     已确认认知 · v{data.cognition.version}
                   </span>
                   <CognitionContent value={data.cognition} />
                   {!data.thread.archived && (
-                    <button onClick={() => setEditingCognition((v) => !v)}>
-                      手动编辑认知
-                    </button>
-                  )}
-                  {editingCognition && (
-                    <CognitionEditor
-                      key={data.thread.id}
-                      value={data.cognition}
-                      onAction={onAction}
-                      onClose={() => setEditingCognition(false)}
-                    />
+                    <button onClick={onEditCognition}>手动编辑认知</button>
                   )}
                 </section>
-                {!data.thread.archived && (
-                  <AnalysisControls
-                    key={data.thread.id}
-                    threadId={data.thread.id}
-                    count={data.count}
-                    tasks={tasks}
-                    hasApiKey={hasApiKey}
-                    onAction={onAction}
-                    onSettings={onSettings}
-                    onResult={onResult}
-                  />
-                )}
-                {!data.thread.archived && (
-                  <section className="resource-section resource-research">
-                    <h3>参考资料</h3>
-                    <ResearchControls
-                      key={`research:${data.thread.id}`}
-                      threadId={data.thread.id}
-                      title={data.thread.title}
-                      tasks={tasks}
-                      hasApiKey={hasApiKey}
-                      onAction={onAction}
-                      onResult={onResult}
-                      onSource={onSource}
-                    />
-                  </section>
-                )}
                 {data.recaps.map((r) => (
                   <details
                     key={r.id}

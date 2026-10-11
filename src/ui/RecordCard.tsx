@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { NoteReply } from "./NoteReply";
 import { ResearchControls } from "./ResearchControls";
+import { AssignmentSuggestion } from "./AssignmentSuggestion";
+import { NoteThoughtControls } from "./NoteThoughtControls";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { QuoteReference } from "./QuoteReference";
 import type { AiTask } from "../shared";
@@ -10,6 +12,7 @@ import {
   type Thread,
   type UkiApi,
   type Evidence,
+  type StructureProposal,
 } from "../shared";
 export const dateLabel = (iso: string) =>
   new Date(iso).toLocaleString("zh-CN", {
@@ -37,8 +40,10 @@ export function RecordCard({
   query = "",
   onDeleted,
   streaming = {},
+  assignmentSuggestions = [],
 }: {
   note: Note;
+  assignmentSuggestions?: StructureProposal[];
   threads: Thread[];
   expanded: boolean;
   onOpen(): void;
@@ -393,7 +398,14 @@ export function RecordCard({
       <button className="record-open" onClick={onOpen} aria-expanded={expanded}>
         <div className="record-meta">
           <time>{dateLabel(note.createdAt)}</time>
-          <span>{thread?.title ?? "待整理"}</span>
+          <span>
+            {thread?.title ??
+              (assignmentSuggestions.length
+                ? "归属待确认"
+                : ["pending", "running"].includes(note.status)
+                  ? "自动整理中"
+                  : "暂未归属")}
+          </span>
           {note.mode === "discussion" && <span>继续讨论</span>}
           {note.source === "inbox" && <span>手机输入</span>}
           {note.status !== "done" && (
@@ -419,6 +431,15 @@ export function RecordCard({
           {highlighted(short ? note.raw : note.synopsis || "待生成")}
         </p>
       </button>
+      {!note.deletedAt &&
+        assignmentSuggestions.map((value) => (
+          <AssignmentSuggestion
+            key={value.id}
+            value={value}
+            threads={threads}
+            onAction={onAction}
+          />
+        ))}
       {!!note.searchMatches?.some((match) => match.revision === undefined) && (
         <p className="search-hits-label">
           命中：
@@ -638,7 +659,7 @@ export function RecordCard({
               {replying && !note.deletedAt && (
                 <NoteReply note={full} onAction={onAction} />
               )}
-              <div className="record-actions">
+              <div className="record-actions note-analysis-tools">
                 {["failed", "partial", "cancelled"].includes(full.status) &&
                   !note.deletedAt && (
                     <button
@@ -653,19 +674,28 @@ export function RecordCard({
                 >
                   {replying ? "收起回复" : "回复 AI"}
                 </button>
+                {full.mode === "note" && (
+                  <>
+                    <NoteThoughtControls
+                      note={full}
+                      tasks={tasks}
+                      hasApiKey={hasApiKey}
+                      onAction={onAction}
+                      onEvidence={onEvidence}
+                    />
+                    <ResearchControls
+                      noteId={full.id}
+                      threadId={full.threadId}
+                      title={full.title}
+                      tasks={tasks}
+                      hasApiKey={hasApiKey}
+                      onAction={onAction}
+                      onResult={onResult}
+                      onSource={onSource}
+                    />
+                  </>
+                )}
               </div>
-              {full.mode === "note" && (
-                <ResearchControls
-                  noteId={full.id}
-                  threadId={full.threadId}
-                  title={full.title}
-                  tasks={tasks}
-                  hasApiKey={hasApiKey}
-                  onAction={onAction}
-                  onResult={onResult}
-                  onSource={onSource}
-                />
-              )}
             </>
           )}
         </div>

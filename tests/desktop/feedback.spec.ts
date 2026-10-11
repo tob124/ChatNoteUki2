@@ -68,7 +68,7 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     await page
       .getByRole("button", { name: "王者匹配机制是否公平", exact: true })
       .click();
-    let panel = page.getByRole("complementary", { name: "备查资料" });
+    let panel = page.locator(".thread-workbench");
     await expect(
       panel.getByRole("button", { name: "生成线程回顾", exact: true }),
     ).toBeDisabled();
@@ -160,16 +160,20 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     await expect(
       panel.getByText("生成完成，结果已保存", { exact: true }),
     ).toBeVisible();
-    await expect(panel.locator(".recap")).toBeVisible();
+    // Finished work collapses; reading an older page is not moved automatically.
+    await expect(panel.locator(".analysis-progress[open]")).toHaveCount(0);
+    await panel.getByText("生成完成，结果已保存", { exact: true }).click();
     await page.getByLabel("搜索历史").fill("不会命中结果");
     await panel.getByRole("button", { name: "查看回顾", exact: true }).click();
-    await expect(panel).toBeHidden();
+    await expect(
+      page.getByRole("complementary", { name: "备查资料" }),
+    ).toBeHidden();
     await expect(page.locator(".main-pane .recap")).toBeVisible();
     await expect(page.locator(".main-pane .recap")).toContainText(
       "「王者匹配机制是否公平」值得观察",
     );
     await page.getByRole("button", { name: "概览", exact: true }).click();
-    panel = page.getByRole("complementary", { name: "备查资料" });
+    panel = page.locator(".thread-workbench");
     await panel
       .getByRole("button", { name: "检查认知变化", exact: true })
       .click();
@@ -178,12 +182,21 @@ test("analysis feedback: running, failure, retry, result navigation, budgets and
     ).toBeVisible();
     await succeed();
     await panel
+      .locator(".analysis-task")
+      .filter({
+        has: page.getByRole("button", { name: "检查认知变化", exact: true }),
+      })
+      .getByText("生成完成，结果已保存", { exact: true })
+      .click();
+    await panel
       .getByRole("button", { name: "查看认知建议", exact: true })
       .click();
-    await expect(panel).toBeHidden();
+    await expect(
+      page.getByRole("complementary", { name: "备查资料" }),
+    ).toBeHidden();
     await expect(page.locator(".main-pane .proposal")).toBeVisible();
     await page.getByRole("button", { name: "概览", exact: true }).click();
-    panel = page.getByRole("complementary", { name: "备查资料" });
+    panel = page.locator(".thread-workbench");
     await page.evaluate(async () => {
       const { settings } = await window.uki.bootstrap();
       await window.uki.saveSettings({

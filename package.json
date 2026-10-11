@@ -1,6 +1,6 @@
 {
-  "name": "chatnoteuki",
-  "version": "0.5.1",
+  "name": "chatnoteuki-glass",
+  "version": "0.5.2-glass.1",
   "private": true,
   "type": "module",
   "description": "A personal Windows thought companion with durable history and Nutstore WebDAV sync",
@@ -40,8 +40,8 @@
     "vitest": "latest"
   },
   "build": {
-    "appId": "com.tob124.chatnoteuki",
-    "productName": "ChatNoteUki",
+    "appId": "com.tob124.chatnoteuki.glass",
+    "productName": "ChatNoteUki Glass",
     "asar": true,
     "directories": {
       "output": "release"

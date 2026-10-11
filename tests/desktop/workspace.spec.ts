@@ -41,7 +41,9 @@ test("workspace: local drafts, hierarchy, lazy pages, anchored reading, correcti
     await expect(page.locator(".record")).toHaveCount(30);
     await expect(
       page.getByRole("complementary", { name: "备查资料" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "概览", exact: true }).click();
+    await expect(page.getByRole("complementary", { name: "备查资料" })).toBeVisible();
     await page.getByLabel("写下想法").fill("线程草稿，请留住。");
     await page.getByRole("button", { name: "全部记录", exact: false }).click();
     await page.getByLabel("写下想法").fill("全局草稿");

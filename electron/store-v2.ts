@@ -270,6 +270,7 @@ const schemas = {
   "structure.undone": z.object({ id: uuid }),
   "task.added": taskSchema,
   "task.updated": z.object({
+    research: researchInputSchema.optional(),
     inputBases: basesSchema.optional(),
     resetInput: z.boolean().optional(),
     id: uuid,
@@ -2297,7 +2298,7 @@ export class Store {
       args = [...c.args, ...(filter ? [q.workspace] : [])];
       if (q.workspace === "all") {
         select +=
-          " UNION ALL SELECT seq,'structure',id FROM entities_v2 WHERE kind='structures'";
+          " UNION ALL SELECT seq,'structure',id FROM entities_v2 WHERE kind='structures' AND NOT (json_extract(body,'$.status')='pending' AND json_extract(body,'$.kind') IN ('create','assign') AND json_array_length(body,'$.noteIds')>0)";
       } else {
         select +=
           " UNION ALL SELECT seq,'recap',id FROM entities_v2 WHERE kind='recaps' AND json_extract(body,'$.threadId')=?";
@@ -2399,6 +2400,29 @@ export class Store {
       }
       return { seq: Number(r.seq), kind, value };
     });
+    // Only fetch suggestions for this page, including the unassigned/search views.
+    // A note and its proposed destination stay visible together across pagination.
+    const noteItems = items.filter(
+      (i) => i.kind === "note" && !(i.value as Note).deletedAt,
+    );
+    const suggestions = new Map<string, StructureProposal[]>();
+    if (noteItems.length) {
+      const ids = noteItems.map((i) => i.value.id);
+      const proposals = this.db
+        .prepare(
+          `SELECT DISTINCT e.body FROM entities_v2 e JOIN json_each(e.body,'$.noteIds') n WHERE e.kind='structures' AND json_extract(e.body,'$.status')='pending' AND json_extract(e.body,'$.kind') IN ('create','assign') AND n.value IN (${ids.map(() => "?").join(",")}) ORDER BY e.seq DESC`,
+        )
+        .all(...ids);
+      for (const row of proposals) {
+        const p = JSON.parse(String(row.body)) as StructureProposal;
+        for (const id of p.noteIds) {
+          if (!ids.includes(id)) continue;
+          const list = suggestions.get(id) ?? [];
+          list.push(p);
+          suggestions.set(id, list);
+        }
+      }
+    }
     const newer =
       q.before || q.date
         ? this.db
@@ -2408,7 +2432,11 @@ export class Store {
             .all(...args, cut)
         : [];
     return {
-      items,
+      items: items.map((i) =>
+        i.kind === "note"
+          ? { ...i, assignmentSuggestions: suggestions.get(i.value.id) ?? [] }
+          : i,
+      ),
       newerBefore: newer.length ? Number(newer.at(-1)!.seq) + 1 : null,
       before: rows.length > 30 ? Number(visible[0].seq) : null,
       latest: this.latestSeq(),
@@ -2753,6 +2781,22 @@ export class Store {
   }
   tasks(): AiTask[] {
     return this.all("tasks");
+  }
+  recap(id: string): Recap {
+    const value = this.get<Recap>("recaps", id);
+    if (!value) throw new Error("这次分析结果不存在");
+    return value;
+  }
+  activeAutomaticResearch(
+    noteId: string | null,
+    threadId: string | null,
+  ): AiTask | null {
+    const row = this.db
+      .prepare(
+        "SELECT body FROM entities_v2 WHERE kind='tasks' AND json_extract(body,'$.kind')='research' AND json_extract(body,'$.research.automatic')=1 AND json_extract(body,'$.research.noteId') IS ? AND json_extract(body,'$.threadId') IS ? AND json_extract(body,'$.status') IN ('pending','running','budget') ORDER BY seq DESC LIMIT 1",
+      )
+      .get(noteId, threadId);
+    return row ? JSON.parse(String(row.body)) : null;
   }
   researchSource(
     ownerId: string,

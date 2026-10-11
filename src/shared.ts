@@ -193,6 +193,7 @@ export interface WorkspaceItem {
   seq: number;
   kind: "note" | "structure" | "proposal" | "recap" | "research";
   value: Note | StructureProposal | Proposal | Recap | Research;
+  assignmentSuggestions?: StructureProposal[];
 }
 export interface WorkspacePage {
   items: WorkspaceItem[];
@@ -493,6 +494,8 @@ export interface UkiApi {
   moveBatch(ids: string[], threadId: string | null): Promise<string>;
   undoMove(id: string): Promise<void>;
   research(input: ResearchInput): Promise<string>;
+  researchAuto(input: { noteId?: string; threadId?: string }): Promise<string>;
+  recapDetail(id: string): Promise<Recap>;
   researchDetail(id: string): Promise<Research>;
   researchSource(ownerId: string, sourceId: string): Promise<ResearchSource>;
   cancelResearch(id: string): Promise<void>;

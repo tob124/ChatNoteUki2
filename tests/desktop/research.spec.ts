@@ -113,7 +113,15 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
             };
         return new Response(
           JSON.stringify({
-            choices: [{ message: { content: body.stream ? content.reply : JSON.stringify(content) } }],
+            choices: [
+              {
+                message: {
+                  content: body.stream
+                    ? content.reply
+                    : JSON.stringify(content),
+                },
+              },
+            ],
             usage: { prompt_tokens: 40, completion_tokens: 30 },
           }),
         );
@@ -131,7 +139,7 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
       card.getByRole("heading", { name: "通勤与幸福感" }),
     ).toBeVisible();
     await card.locator(".record-open").click();
-    await card.getByRole("button", { name: "查找资料", exact: true }).click();
+    await card.getByRole("button", { name: "自定义查证", exact: true }).click();
     await card.getByLabel("资料分析问题").fill("通勤和满意度有什么关系");
     await card.getByLabel("公开搜索词").fill("通勤 满意度 观察研究");
     await expect
@@ -256,7 +264,9 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
       "true"
     )
       await origin.locator(".record-open").click();
-    await origin.getByRole("button", { name: "查找资料", exact: true }).click();
+    await origin
+      .getByRole("button", { name: "自定义查证", exact: true })
+      .click();
     await origin.getByLabel("资料分析问题").fill("资料无法打开时该怎么办");
     await origin.getByLabel("公开搜索词").fill("另一个公开查询");
     await origin.getByRole("button", { name: "确认搜索并分析" }).click();
@@ -276,7 +286,10 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
     await app.close();
     app = await launch();
     page = await app.firstWindow();
-    await page.getByRole("navigation").getByRole("button", { name: "资料", exact: true }).click();
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: "资料", exact: true })
+      .click();
     await expect(page.locator(".research-card")).toHaveCount(1);
     await expect(page.getByLabel("资料后的我的判断")).toHaveValue(
       "还没有发出的资料判断草稿。",

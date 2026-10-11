@@ -18,7 +18,11 @@ import {
   selectionInputSchema,
   type SelectionInput,
 } from "../src/workspace-tools";
-import { researchInputSchema, type ResearchInput } from "../src/research";
+import {
+  researchInputSchema,
+  researchPlanSchema,
+  type ResearchInput,
+} from "../src/research";
 import { DeepSeekSearch, type ResearchSearch } from "./research-search";
 import { readPublicPage } from "./public-source";
 import { runResearch } from "./research-worker";
@@ -974,6 +978,27 @@ export class AiQueue {
       input,
     );
   }
+  queueResearchAuto(value: { noteId?: string; threadId?: string }): string {
+    const note = value.noteId ? this.store.note(value.noteId) : null;
+    if (note?.deletedAt) throw new Error("笔记已删除，不能查证");
+    const thread = value.threadId
+      ? this.store.threads().find((t) => t.id === value.threadId && !t.archived)
+      : null;
+    if (!note && !thread) throw new Error("请选择有效的笔记或活动问题");
+    const existing = this.store.activeAutomaticResearch(
+      note?.id ?? null,
+      note?.threadId ?? thread?.id ?? null,
+    );
+    if (existing) return existing.id;
+    const title = note?.title ?? thread!.title;
+    return this.queueResearch({
+      noteId: note?.id ?? null,
+      threadId: note?.threadId ?? thread?.id ?? null,
+      question: `核对相关依据与不同视角：${title}`.slice(0, 300),
+      queries: ["等待生成公开检索词"],
+      automatic: true,
+    });
+  }
   cancelResearch(id: string) {
     const task = this.store.task(id);
     if (task.kind !== "research" || ["done", "cancelled"].includes(task.status))
@@ -1064,6 +1089,30 @@ export class AiQueue {
     };
     try {
       assertCurrent();
+      if (input.automatic && !input.planned) {
+        this.status = "正在提炼公开检索词";
+        this.changed();
+        const plan = await this.request(
+          'research-query-plan：根据用户选定对象提炼待核对的问题和最多两组公开检索词。返回 JSON {"question":"待查证的问题","queries":["公开关键词"]}。question 3至300字符；每组 queries 2至180字符。检索词仅保留一般主题，不包含人名、账号、邮箱、地址、联系方式、私人经历原句或原文指令。不要把用户观点视为事实；搜索支持或相反的依据。',
+          context,
+          "deepseek-flash",
+          1024,
+          controller.signal,
+          undefined,
+          (v) => researchPlanSchema.parse(v),
+        );
+        assertCurrent();
+        const validated = researchPlanSchema.parse(plan);
+        input.question = validated.question;
+        input.queries = validated.queries;
+        input.planned = true;
+        // Persist before any external search. Completed planning is reused on retry.
+        this.store.append("task.updated", {
+          id: task.id,
+          status: "running",
+          research: input,
+        });
+      }
       const completed = await runResearch({
         input,
         user: JSON.parse(context),

@@ -11,10 +11,13 @@ const diskSchema = z.object({
 });
 export class Credentials {
   private disk: z.infer<typeof diskSchema>;
-  constructor(private path: string) {
+  constructor(
+    private path: string,
+    defaults?: Partial<import("../src/shared").Settings>,
+  ) {
     this.disk = existsSync(path)
       ? diskSchema.parse(JSON.parse(readFileSync(path, "utf8")))
-      : { settings: settingsSchema.parse({}), revision: 0 };
+      : { settings: settingsSchema.parse(defaults ?? {}), revision: 0 };
   }
   settings() {
     return { ...this.disk.settings };

@@ -77,6 +77,7 @@ test("UI polish: contextual empty states, keyboard menus, compact tools and sett
     await expect(page.getByRole("dialog", { name: "管理问题" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByText("问题操作", { exact: true })).toBeFocused();
+    await page.getByRole("button", { name: "概览", exact: true }).click();
     await page.getByRole("button", { name: "最大化资料", exact: true }).click();
     await expect(page.getByRole("dialog", { name: "问题概览" })).toBeVisible();
     await page.keyboard.press("Escape");

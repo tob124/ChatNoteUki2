@@ -59,7 +59,12 @@ protocol.registerSchemesAsPrivileged([
 // An explicit profile isolates acceptance tests and supports portable data.
 const profile = process.env.UKI_DATA_DIR
   ? resolve(process.env.UKI_DATA_DIR)
-  : join(app.getPath("appData"), "ChatNoteUki");
+  : join(
+      app.getPath("appData"),
+      app.getName().toLowerCase().includes("glass")
+        ? "ChatNoteUki-Glass"
+        : "ChatNoteUki",
+    );
 mkdirSync(profile, { recursive: true });
 app.setPath("userData", profile);
 let win: BrowserWindow | null = null;
@@ -659,7 +664,19 @@ function registerIpc() {
     void ai.pump();
     return id;
   });
+  handle("researchAuto", (value) => {
+    const input = z
+      .object({ noteId: uuid.optional(), threadId: uuid.optional() })
+      .strict()
+      .refine((v) => !!v.noteId !== !!v.threadId, "请选择一个笔记或问题")
+      .parse(value);
+    const id = ai.queueResearchAuto(input);
+    changed();
+    void ai.pump();
+    return id;
+  });
   handle("researchDetail", (id) => store.research(uuid.parse(id)));
+  handle("recapDetail", (id) => store.recap(uuid.parse(id)));
   handle("researchSource", (id, sourceId) =>
     store.researchSource(uuid.parse(id), z.string().length(24).parse(sourceId)),
   );
@@ -804,7 +821,12 @@ else {
       store.reimportRawNotes();
       maintainLocalCopies();
       store.recoverInterrupted();
-      credentials = new Credentials(join(data, "credentials.json"));
+      credentials = new Credentials(
+        join(data, "credentials.json"),
+        app.getName().toLowerCase().includes("glass")
+          ? { directory: "ChatNoteUki-Glass" }
+          : undefined,
+      );
       ai = new AiQueue(
         store,
         credentials,

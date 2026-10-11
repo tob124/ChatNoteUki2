@@ -9,6 +9,7 @@ export function AnalysisControls({
   onAction,
   onSettings,
   onResult,
+  compact = false,
 }: {
   threadId: string;
   count: number;
@@ -17,6 +18,7 @@ export function AnalysisControls({
   onAction: Action;
   onSettings(): void;
   onResult(task: AiTask): void;
+  compact?: boolean;
 }) {
   const [pro, setPro] = useState(false),
     [submitting, setSubmitting] = useState<string | null>(null),
@@ -58,9 +60,9 @@ export function AnalysisControls({
     });
   };
   return (
-    <div className="analysis-controls">
+    <div className={`analysis-controls ${compact ? "compact" : ""}`}>
       <div className="analysis-heading">
-        <h3>AI 分析</h3>
+        {!compact && <h3>AI 分析</h3>}
         <details className="analysis-options">
           <summary>模型选项{pro ? " · Pro" : " · Flash"}</summary>
           <label className="check">
@@ -112,18 +114,26 @@ export function AnalysisControls({
             >
               {label}
             </button>
-            <p className="hint">
-              {kind === "cognition"
-                ? "对照已确认认知提出修改建议，由你审批。"
-                : "总结相关记录与讨论，附原文引用。"}
-            </p>
+            {!compact && (
+              <p className="hint">
+                {kind === "cognition"
+                  ? "对照已确认认知提出修改建议，由你审批。"
+                  : "总结相关记录与讨论，附原文引用。"}
+              </p>
+            )}
             {status && (
-              <div
+              <details
+                key={`${task?.id}:${task?.status}:${busy}`}
+                open={
+                  busy ||
+                  active ||
+                  ["failed", "partial"].includes(task?.status ?? "")
+                }
                 className={`analysis-progress ${task?.status ?? "pending"}`}
                 role="status"
                 aria-live="polite"
               >
-                <strong>{status}</strong>
+                <summary>{status}</summary>
                 {task?.error && <p>{task.error}</p>}
                 {task?.status === "done" && task.resultId && (
                   <button onClick={() => onResult(task)}>
@@ -148,7 +158,7 @@ export function AnalysisControls({
                       手动重试
                     </button>
                   )}
-              </div>
+              </details>
             )}
           </section>
         );

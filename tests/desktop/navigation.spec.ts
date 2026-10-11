@@ -92,6 +92,9 @@ test("search old version, verify reference, locate and reply, return; paged dial
     await expect(page.getByLabel("搜索历史")).toHaveValue("旧版本独特令牌");
     await expect(page.getByLabel("包含更正历史")).toBeChecked();
     await page.getByRole("button", { name: "验收问题", exact: true }).click();
+    await expect(page.locator(".main-header h1")).toHaveText("验收问题");
+    if (!(await page.locator(".resource-header h2").isVisible()))
+      await page.getByRole("button", { name: "概览", exact: true }).click();
     await expect(page.locator(".resource-header h2")).toHaveText("问题概览");
     await page
       .getByRole("button", { name: "手动编辑认知", exact: true })
@@ -103,6 +106,9 @@ test("search old version, verify reference, locate and reply, return; paged dial
     app = await launch();
     page = await app.firstWindow();
     await page.getByRole("button", { name: "验收问题", exact: true }).click();
+    await expect(page.locator(".main-header h1")).toHaveText("验收问题");
+    if (!(await page.locator(".resource-header h2").isVisible()))
+      await page.getByRole("button", { name: "概览", exact: true }).click();
     await expect(page.locator(".resource-header h2")).toHaveText("问题概览");
     await page
       .getByRole("button", { name: "手动编辑认知", exact: true })

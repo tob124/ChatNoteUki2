@@ -53,7 +53,7 @@ test("new content is scoped, latest-page refresh preserves its workspace and rev
       .getByRole("button", { name: "正在阅读的问题", exact: true })
       .click();
     await expect(page.locator(".record")).toHaveCount(30);
-    await page.getByRole("button", { name: "收起资料", exact: true }).click();
+    await expect(page.getByRole("complementary", { name: "备查资料" })).toHaveCount(0);
     await page.locator(".records").evaluate((el) => {
       el.scrollTop = 0;
     });

@@ -36,6 +36,9 @@ import { SettingsModal } from "./SettingsModal";
 import { TaskPanel } from "./TaskPanel";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { SearchTools } from "./SearchTools";
+import { AnalysisControls } from "./AnalysisControls";
+import { CognitionEditor } from "./CognitionEditor";
+import { ResearchControls } from "./ResearchControls";
 import { SelectionAnalysis } from "./SelectionAnalysis";
 import { usePopovers } from "./usePopovers";
 import type { SavedQuery } from "../workspace-tools";
@@ -58,7 +61,7 @@ const labels: Record<string, string> = {
 const emptyCopy: Record<string, [string, string]> = {
   research: [
     "还没有保存的资料分析",
-    "打开笔记或问题，点击「查找资料」。确认搜索词后才会联网查找与分析。",
+    "打开笔记或问题，点击「外部资料查证」。AI 会提炼公开检索词并联网分析，也可先自定义查询。",
   ],
   organize: [
     "没有待确认的整理建议",
@@ -66,7 +69,7 @@ const emptyCopy: Record<string, [string, string]> = {
   ],
   review: [
     "还没有生成的回顾",
-    "在问题概览中生成线程回顾，或选择几条笔记进行分析。结果保存在这里，任务进度可在底部查看。",
+    "在问题工作区生成线程回顾，或选择几条笔记进行分析。结果保存在这里，任务进度可在底部查看。",
   ],
   trash: [
     "回收站是空的",
@@ -113,6 +116,8 @@ export function App() {
     [loading, setLoading] = useState(false);
   const [resultToShow, setResultToShow] = useState<string | null>(null);
   const [taskPanel, setTaskPanel] = useState(false);
+  const [editingCognition, setEditingCognition] = useState(false);
+  useEffect(() => setEditingCognition(false), [workspace]);
   const [analysisNotes, setAnalysisNotes] = useState<Note[] | null>(null);
   const [materialOpen, setMaterialOpen] = useState<string>();
   const captureLock = useRef(false),
@@ -421,7 +426,7 @@ export function App() {
       const specific = !Object.hasOwn(labels, w);
       setState({
         ...saved,
-        panel: saved.panel ?? (specific ? "normal" : "closed"),
+        panel: saved.panel ?? "closed",
       });
       restoreScroll.current = saved.scroll ?? "bottom";
       setQuery(saved.query ?? "");
@@ -534,6 +539,7 @@ export function App() {
         anchor: undefined,
         anchorOffset: undefined,
         panel: "closed",
+        openIds: [...state.openIds, task.resultId],
       });
       setDate("");
       setQuery("");
@@ -620,8 +626,8 @@ export function App() {
       .filter((t) => !t.archived)
       .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)),
     font = Number(prefs.font ?? 14),
-    left = Number(prefs.left ?? 220),
-    right = Number(prefs.right ?? 300),
+    left = Number(prefs.left ?? 200),
+    right = Number(prefs.right ?? 280),
     hasFilter = !!query || aiFilter !== "all" || !!date,
     title =
       workspace === "all" && data.counts.notes > 0
@@ -634,7 +640,7 @@ export function App() {
   } as CSSProperties;
   return (
     <div
-      className={`app-shell ${prefs.leftClosed ? "left-hidden" : ""} ${panel === "closed" || panel === "max" ? "panel-hidden" : ""} ${panel === "wide" ? "panel-wide" : ""}`}
+      className={`app-shell ${prefs.appearance === "plain" ? "appearance-plain" : "appearance-glass"} ${prefs.reduceTransparency ? "reduced-transparency" : ""} ${prefs.leftClosed ? "left-hidden" : ""} ${panel === "closed" || panel === "max" ? "panel-hidden" : ""} ${panel === "wide" ? "panel-wide" : ""}`}
       style={style}
     >
       {!prefs.leftClosed && (
@@ -848,7 +854,7 @@ export function App() {
         {workspace === "review" || workspace === "research" ? (
           <p className="review-intro hint">
             {workspace === "research"
-              ? "这里保存围绕笔记和问题的资料分析。打开笔记卡片或问题右侧的「查找资料」，确认搜索词后才联网；资料与 AI 判断不会自动成为你的观点。"
+              ? "这里保存围绕笔记和问题的资料分析。在中间工作区一键查证，资料与 AI 判断不会自动成为你的观点。"
               : "这里汇集线程回顾和所选笔记分析，附原文引用。在记录中选择笔记可分析所选；进入具体问题可生成线程回顾。"}
           </p>
         ) : (
@@ -899,6 +905,68 @@ export function App() {
               }}
             />
           </div>
+        )}
+        {thread && !thread.archived && (
+          <section className="thread-workbench" aria-label="问题工作区工具">
+            <AnalysisControls
+              threadId={thread.id}
+              count={resources?.count ?? 0}
+              tasks={data.tasks}
+              hasApiKey={data.settings.hasApiKey}
+              onAction={action}
+              onSettings={() => setSettings(true)}
+              onResult={showResult}
+              compact
+            />
+            <ResearchControls
+              threadId={thread.id}
+              title={thread.title}
+              tasks={data.tasks}
+              hasApiKey={data.settings.hasApiKey}
+              onAction={action}
+              onResult={showResult}
+              onSource={externalSource}
+            />
+            <details
+              className="question-actions"
+              data-popover
+              data-close-on-action
+            >
+              <summary>问题操作</summary>
+              <div className="menu-items">
+                <button onClick={() => setEditingThread(thread)}>
+                  管理问题
+                </button>
+                <button onClick={() => setEditingCognition(true)}>
+                  手动编辑认知
+                </button>
+                <button
+                  onClick={() =>
+                    action(() => window.uki.pin(thread.id, !thread.pinned))
+                  }
+                >
+                  {thread.pinned ? "取消置顶" : "置顶问题"}
+                </button>
+                <button
+                  onClick={() =>
+                    action(() => window.uki.exportNotes([], thread.id))
+                  }
+                >
+                  导出此问题…
+                </button>
+              </div>
+            </details>
+          </section>
+        )}
+        {editingCognition && resources?.thread && (
+          <section className="thread-editor" aria-label="编辑当前问题认知">
+            <CognitionEditor
+              key={resources.thread.id}
+              value={resources.cognition}
+              onAction={action}
+              onClose={() => setEditingCognition(false)}
+            />
+          </section>
         )}
         {error && (
           <div className="error-banner" role="alert">
@@ -1131,23 +1199,26 @@ export function App() {
             {page?.total ?? "…"} 项
             {(page?.total ?? 0) > 30 ? " · 每页 30 项" : ""}
           </span>
-          <label>
-            定位日期
-            <input
-              type="date"
-              aria-label="定位日期"
-              value={date}
-              onChange={(e) => {
-                setDate(e.target.value);
-                restoreScroll.current = "bottom";
-                patch({
-                  before: undefined,
-                  date: e.target.value || undefined,
-                  anchor: undefined,
-                });
-              }}
-            />
-          </label>
+          <details className="date-jump" data-popover>
+            <summary>定位日期</summary>
+            <label>
+              日期
+              <input
+                type="date"
+                aria-label="定位日期"
+                value={date}
+                onChange={(e) => {
+                  setDate(e.target.value);
+                  restoreScroll.current = "bottom";
+                  patch({
+                    before: undefined,
+                    date: e.target.value || undefined,
+                    anchor: undefined,
+                  });
+                }}
+              />
+            </label>
+          </details>
         </div>
         {selected.length > 0 && (
           <div className="bulk-bar">
@@ -1255,6 +1326,7 @@ export function App() {
                     setNotice("已移入回收站");
                   }}
                   streaming={streaming}
+                  assignmentSuggestions={item.assignmentSuggestions}
                 />
               ) : item.kind === "structure" ? (
                 <StructureSuggestion
@@ -1307,21 +1379,40 @@ export function App() {
                   onSource={externalSource}
                 />
               ) : (
-                <RecapContent
+                <details
+                  className="result-row"
                   key={item.value.id}
-                  value={item.value as Recap}
-                  onEvidence={evidence}
-                  threadTitle={
-                    data.threads.find(
-                      (t) => t.id === (item.value as Recap).threadId,
-                    )?.title
-                  }
-                  onThread={
-                    workspace === "review"
-                      ? (id) => void navigate(id)
+                  data-unit={item.value.id}
+                  open={
+                    workspace === "review" ||
+                    state.openIds.includes(item.value.id)
+                      ? true
                       : undefined
                   }
-                />
+                >
+                  <summary>
+                    {(item.value as Recap).scope === "selection"
+                      ? "AI 思考已完成"
+                      : "线程回顾已完成"}{" "}
+                    ·{" "}
+                    {new Date(item.value.createdAt).toLocaleDateString("zh-CN")}
+                  </summary>
+                  <RecapContent
+                    key={item.value.id}
+                    value={item.value as Recap}
+                    onEvidence={evidence}
+                    threadTitle={
+                      data.threads.find(
+                        (t) => t.id === (item.value as Recap).threadId,
+                      )?.title
+                    }
+                    onThread={
+                      workspace === "review"
+                        ? (id) => void navigate(id)
+                        : undefined
+                    }
+                  />
+                </details>
               ),
             )
           ) : loading ? (
@@ -1506,6 +1597,7 @@ export function App() {
           onEvidence={evidence}
           onAction={action}
           onManage={setEditingThread}
+          onEditCognition={() => setEditingCognition(true)}
           tasks={data.tasks}
           hasApiKey={data.settings.hasApiKey}
           onSettings={() => setSettings(true)}
@@ -1597,6 +1689,25 @@ export function App() {
       )}
       <details className="reading-preferences" data-popover>
         <summary aria-label="阅读设置">Aa</summary>
+        <label>
+          外观
+          <select
+            aria-label="工作区外观"
+            value={prefs.appearance === "plain" ? "plain" : "glass"}
+            onChange={(e) => preference("appearance", e.target.value)}
+          >
+            <option value="glass">玻璃 · 实验</option>
+            <option value="plain">素雅</option>
+          </select>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={!!prefs.reduceTransparency}
+            onChange={(e) => preference("reduceTransparency", e.target.checked)}
+          />
+          减少透明效果
+        </label>
         <label>
           字号
           <input
