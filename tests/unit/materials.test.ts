@@ -273,4 +273,6 @@ it("publishes binary files before metadata, restores on demand and purges shared
   expect(replay.material(id).purged).toBe(true);
   expect(replay.materialPage().items).toHaveLength(0);
   expect([...dav.files.values()].join()).not.toContain("待删除的摘要");
-});
+  // Multiple real SQLite backups and replay can exceed Vitest's 5s default on
+  // hosted Windows disks. Keep all restore/purge assertions and a bounded limit.
+}, 30000);
