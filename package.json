@@ -1,6 +1,6 @@
 {
   "name": "chatnoteuki-glass",
-  "version": "0.5.2-glass.1",
+  "version": "0.5.2-glass.2",
   "private": true,
   "type": "module",
   "description": "A personal Windows thought companion with durable history and Nutstore WebDAV sync",

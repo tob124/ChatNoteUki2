@@ -1,7 +1,14 @@
 import { _electron as electron } from "@playwright/test";
 import { build } from "esbuild";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve, join, sep } from "node:path";
+import { cpus, platform, release, totalmem } from "node:os";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 const folder = resolve(".local", `glass-benchmark-${Date.now()}`);
@@ -16,10 +23,29 @@ await build({
 });
 const { Store } = createRequire(import.meta.url)(bundle);
 const db = join(folder, "thoughts.db");
+// Reuse only a prior synthetic benchmark, in a fresh copied profile.
+if (process.argv[2]) {
+  const fixture = resolve(process.argv[2]);
+  if (
+    !fixture.startsWith(resolve(".local") + sep) ||
+    JSON.parse(readFileSync(join(fixture, "results.json"), "utf8")).notes !==
+      10000
+  )
+    throw new Error(
+      "Only an existing .local synthetic benchmark may be reused",
+    );
+  for (const name of ["thoughts.db", "thoughts.db-wal", "thoughts.db-shm"])
+    if (existsSync(join(fixture, name)))
+      copyFileSync(join(fixture, name), join(folder, name));
+}
 const seed = new Store(db);
 const text =
   "这是一条合成笔记。记录自己的观察，并保留原文作为后续回顾的依据。".repeat(8);
-for (let i = 0; i < 10000; i++) seed.capture({ raw: `合成记录 ${i}：${text}` });
+if (!process.argv[2])
+  for (let i = 0; i < 10000; i++)
+    seed.capture({ raw: `合成记录 ${i}：${text}` });
+if (seed.snapshot().notes.length !== 10000)
+  throw new Error("Unexpected synthetic fixture size");
 seed.close();
 const reports = [];
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,6 +62,8 @@ for (const mode of ["plain", "glass", "glass", "plain"]) {
   try {
     const page = await app.firstWindow();
     await page.locator(".record").first().waitFor();
+    if (mode === "glass")
+      await page.locator(".composer feImage").waitFor({ state: "attached" });
     const firstPageMs = performance.now() - start;
     await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 900 }),
@@ -110,8 +138,15 @@ for (const mode of ["plain", "glass", "glass", "plain"]) {
 }
 const result = {
   notes: 10000,
-  version: "0.5.2-glass.1",
+  version: JSON.parse(readFileSync("package.json", "utf8")).version,
   runtime: process.version,
+  machine: {
+    platform: platform(),
+    osRelease: release(),
+    cpu: cpus()[0].model,
+    logicalCpus: cpus().length,
+    ramGiB: totalmem() / 1024 ** 3,
+  },
   caveat:
     "Local development executable; app process CPU and working set, not GPU power or system fan measurements. Four warm-cache runs; not a cold boot benchmark.",
   reports,

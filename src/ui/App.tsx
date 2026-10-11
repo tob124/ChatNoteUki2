@@ -40,6 +40,7 @@ import { AnalysisControls } from "./AnalysisControls";
 import { CognitionEditor } from "./CognitionEditor";
 import { ResearchControls } from "./ResearchControls";
 import { SelectionAnalysis } from "./SelectionAnalysis";
+import { GlassLens } from "./GlassLens";
 import { usePopovers } from "./usePopovers";
 import type { SavedQuery } from "../workspace-tools";
 const blank = (): WorkspaceState => ({
@@ -829,6 +830,11 @@ export function App() {
             </div>
           </div>
           <div className="header-actions">
+            <GlassLens
+              enabled={
+                prefs.appearance !== "plain" && !prefs.reduceTransparency
+              }
+            />
             <button
               disabled={!data.settings.hasDavPassword}
               title={
@@ -1464,6 +1470,12 @@ export function App() {
         {(!["review", "research", "trash", "favorites"].includes(workspace) ||
           !!state.draft) && (
           <div className="composer">
+            <GlassLens
+              enabled={
+                prefs.appearance !== "plain" && !prefs.reduceTransparency
+              }
+              radius={28}
+            />
             {["review", "research", "trash", "favorites"].includes(
               workspace,
             ) && (

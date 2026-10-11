@@ -63,17 +63,19 @@ export function AnalysisControls({
     <div className={`analysis-controls ${compact ? "compact" : ""}`}>
       <div className="analysis-heading">
         {!compact && <h3>AI 分析</h3>}
-        <details className="analysis-options">
+        <details className="analysis-options" data-popover>
           <summary>模型选项{pro ? " · Pro" : " · Flash"}</summary>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={pro}
-              onChange={(e) => setPro(e.target.checked)}
-              disabled={!!submitting}
-            />
-            本次主动分析使用 Pro
-          </label>
+          <div className="menu-items">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={pro}
+                onChange={(e) => setPro(e.target.checked)}
+                disabled={!!submitting}
+              />
+              本次主动分析使用 Pro
+            </label>
+          </div>
         </details>
       </div>
       {(["recap", "cognition"] as const).map((kind) => {

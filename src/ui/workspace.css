@@ -113,7 +113,8 @@
 .thread-workbench {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  align-items: center;
+  gap: 6px;
   padding: 5px 0;
   font-size: 12px;
 }
@@ -128,27 +129,31 @@
   border-radius: 10px;
 }
 .analysis-controls.compact {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 6px;
+  display: contents;
   padding: 0;
   border: 0;
   margin: 0;
 }
 .analysis-controls.compact .analysis-heading {
-  order: 3;
+  display: contents;
   margin: 0;
 }
 .analysis-controls.compact .analysis-task {
+  display: contents;
   padding: 0;
   margin: 0;
 }
 .analysis-controls.compact .analysis-options {
+  order: 10;
   width: auto;
+  position: relative;
+}
+.analysis-controls.compact .analysis-options[open] {
+  flex-basis: auto;
 }
 .analysis-controls.compact .analysis-progress {
-  max-width: 230px;
+  order: 20;
+  flex-basis: 100%;
   padding: 3px 0;
   border: 0;
   background: transparent;
@@ -160,6 +165,8 @@
   font-size: 12px;
 }
 .analysis-controls.compact > .hint {
+  order: 20;
+  flex-basis: 100%;
   margin: 4px 0;
 }
 .research-controls {
@@ -234,31 +241,101 @@
 .resource-section {
   margin-top: 18px;
 }
+.appearance-glass {
+  background:
+    radial-gradient(ellipse at 95% 100%, #c3def0 0, transparent 48%),
+    radial-gradient(ellipse at 5% 0%, #d4dfef 0, transparent 50%),
+    linear-gradient(125deg, #e9edf4, #f6f5f2 55%, #e5edf6);
+}
+.appearance-glass .main-pane {
+  background: transparent;
+}
+.appearance-glass .records {
+  background: #fbfcfe;
+  border: 1px solid #ffffff;
+  border-radius: 16px;
+  padding: 6px 12px 56px;
+  margin-top: 4px;
+}
 .appearance-glass .sidebar {
   margin: 8px 0 8px 8px;
   border: 1px solid #ffffff;
   border-radius: 18px;
-  background: #ffffff99;
-  box-shadow: 0 4px 18px #26384908;
+  background: #f8fbffb8;
+  box-shadow:
+    0 8px 28px #364d7310,
+    inset 0 1px 1px #ffffff;
 }
 .appearance-glass .header-actions,
 .appearance-glass .composer {
-  border: 1px solid #dce2ea;
-  border-radius: 20px;
-  background: linear-gradient(135deg, #fffffff2, #f0f4f7de);
+  position: relative;
+  border: 1px solid #ffffffad;
+  border-radius: 24px;
+  background: linear-gradient(125deg, #ffffffa8, #ffffff5c 48%, #f3f8ff78);
   box-shadow:
-    inset 0 1px 0 #fff,
-    0 4px 14px #22334c0c;
-  backdrop-filter: blur(10px);
+    0 14px 32px #354c6d24,
+    0 3px 8px #283d5e16,
+    inset 0 1px 1px #ffffffeb,
+    inset 0 -1px 1px #a2b7d02e;
+  backdrop-filter: blur(6px) saturate(1.35);
+  backdrop-filter: var(--lens-filter, blur(6px)) saturate(1.35);
+}
+.appearance-glass .header-actions::after,
+.appearance-glass .composer::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    135deg,
+    #ffffff,
+    #ffffff20 32%,
+    #b6d7ed8c 52%,
+    #ffffffee 74%,
+    #e8d7c390
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.appearance-glass .composer {
+  align-self: center;
+  width: calc(100% - 32px);
+  margin-top: -24px;
+  margin-bottom: 10px;
+  border-radius: 28px;
+  z-index: 3;
+  padding: 10px 16px;
+}
+.appearance-glass .composer:focus-within {
+  border-color: #f9fcff;
+  box-shadow:
+    0 16px 36px #354c6d29,
+    0 3px 10px #283d5e1a,
+    inset 0 1px 1px #ffffff,
+    0 0 0 2px #709bcb35;
+}
+.glass-lens-defs {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
 }
 .appearance-glass .header-actions {
-  padding: 3px;
+  padding: 4px;
   border-radius: 24px;
 }
 .appearance-glass .header-actions button {
   background: transparent;
   border-color: transparent;
   border-radius: 18px;
+  height: 32px;
+  padding: 4px 12px;
 }
 .appearance-glass .composer .primary {
   border-radius: 16px;
@@ -273,6 +350,69 @@
 .reduced-transparency .composer {
   background: #f4f6f9;
   backdrop-filter: none;
+}
+.thread-workbench .research-controls {
+  display: contents;
+}
+.thread-workbench .research-controls > :not(button) {
+  order: 20;
+  flex-basis: 100%;
+}
+.thread-workbench .question-actions {
+  order: 12;
+}
+.thread-workbench .analysis-task > button,
+.thread-workbench .research-controls > button,
+.thread-workbench .question-actions > summary,
+.thread-workbench .analysis-options > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  margin: 0;
+  padding: 5px 10px;
+  border: 1px solid #d5deea;
+  border-radius: 10px;
+  font:
+    400 12px/20px "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    sans-serif;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  list-style: none;
+  background: #ffffffb8;
+}
+.thread-workbench .question-actions > summary::after,
+.thread-workbench .analysis-options > summary::after {
+  content: "⌄";
+  margin-left: 6px;
+  color: #626f82;
+}
+.thread-workbench .analysis-options > summary {
+  min-width: 128px;
+}
+.thread-workbench .analysis-controls > .error {
+  order: 20;
+  flex-basis: 100%;
+}
+.thread-workbench .analysis-options .menu-items {
+  left: 0;
+  right: auto;
+  min-width: 210px;
+}
+.thread-workbench .analysis-options .check {
+  padding: 6px;
+  margin: 0;
+}
+.thread-workbench .analysis-progress button {
+  margin: 6px 0 0;
+}
+.thread-workbench > .analysis-controls > .hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
 }
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
   .appearance-glass .sidebar,
