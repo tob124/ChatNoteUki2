@@ -1,6 +1,6 @@
 {
   "name": "chatnoteuki",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "description": "A personal Windows thought companion with durable history and Nutstore WebDAV sync",

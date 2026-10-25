@@ -20,6 +20,7 @@ import {
 } from "../src/workspace-tools";
 import { researchInputSchema, type ResearchInput } from "../src/research";
 import { DeepSeekSearch, type ResearchSearch } from "./research-search";
+import { readDeepSeekPage } from "./research-search";
 import { readPublicPage } from "./public-source";
 import { runResearch } from "./research-worker";
 
@@ -199,7 +200,8 @@ export class AiQueue {
     private changed: () => void,
     private transport: AiTransport = new DeepSeek(),
     private searchTransport: ResearchSearch = new DeepSeekSearch(),
-    private pageReader: typeof readPublicPage = readPublicPage,
+    private pageReader: typeof readPublicPage = (url, signal) =>
+      readDeepSeekPage(this.config.apiKey(), url, signal),
     private progress: (id: string, text: string) => void = () => {},
   ) {
     this.requests = new AiRequests(store, config, transport, (stage) => {
@@ -1085,13 +1087,13 @@ export class AiQueue {
           this.changed();
         },
         search: async (query) => {
-          this.budget("", query, 1800);
+          this.budget("", query, 0); // Preserve an explicitly configured daily hard budget; record zero model tokens for Search.
           const id = randomUUID();
           this.store.append("usage.reserved", {
             id,
-            input: countTokens(query) + 256,
-            output: 1800,
-            model: "deepseek-v4-flash-search",
+            input: 0,
+            output: 0,
+            model: "deepseek-search",
             createdAt: new Date().toISOString(),
           });
           try {
@@ -1104,7 +1106,7 @@ export class AiQueue {
                   input: usage.input,
                   output: usage.output,
                   searches: usage.searches,
-                  model: "deepseek-v4-flash-search",
+                  model: "deepseek-search",
                   createdAt: new Date().toISOString(),
                 });
               },

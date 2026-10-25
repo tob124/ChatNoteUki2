@@ -16,6 +16,49 @@ export interface ResearchSearch {
   ): Promise<SearchResult>;
 }
 export function parseSearchResponse(data: any): SearchResult {
+  if (Array.isArray(data?.results)) {
+    const sources = new Map<string, ResearchSource>();
+    for (const item of [...data.results].sort(
+      (a, b) =>
+        (b?.authority ?? -1) - (a?.authority ?? -1) ||
+        (b?.rerank_score ?? 0) - (a?.rerank_score ?? 0),
+    )) {
+      if (!item || typeof item.url !== "string") continue;
+      try {
+        const url = publicUrl(item.url).href;
+        if (url.length > 2000) continue;
+        sources.set(url, {
+          id: createHash("sha256").update(url).digest("hex").slice(0, 24),
+          url,
+          title:
+            typeof item.title === "string"
+              ? item.title.slice(0, 500)
+              : "未提供标题",
+          discoveredAt: new Date().toISOString(),
+          snippet:
+            typeof item.snippet === "string" ? item.snippet.slice(0, 1500) : "",
+          ...(typeof item.date === "string"
+            ? { publishedAt: item.date.slice(0, 100) }
+            : {}),
+          text: "",
+          status: "discovered",
+          error: null,
+          coverage: "仅搜索结果，未读取正文",
+        });
+      } catch {
+        /* Unsafe destinations cannot become sources. */
+      }
+    }
+    // Standalone Search is billed per request; no model token usage is produced.
+    return {
+      sources: [...sources.values()].slice(0, 8),
+      input: 0,
+      output: 0,
+      searches: 1,
+    };
+  }
+  // Existing persisted/test responses remain readable after upgrading.
+
   const input = data.usage?.input_tokens,
     output = data.usage?.output_tokens;
   if (
@@ -84,7 +127,7 @@ export class DeepSeekSearch implements ResearchSearch {
     signal?: AbortSignal,
   ) {
     const response = await this.send(
-      "https://api.deepseek.com/anthropic/v1/messages",
+      "https://api.deepseek.com/v1/tools/search",
       {
         method: "POST",
         redirect: "error",
@@ -93,22 +136,12 @@ export class DeepSeekSearch implements ResearchSearch {
           : AbortSignal.timeout(90_000),
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": key,
           Authorization: `Bearer ${key}`,
-          "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "deepseek-v4-flash",
-          max_tokens: 1800,
-          messages: [
-            {
-              role: "user",
-              content: `Perform one focused web search for this query. Prefer relevant original research, official institutions, authors or publishers. Return structured search results, do not answer the question or search additional topics. Query: ${query.slice(0, 180)}`,
-            },
-          ],
-          tools: [
-            { type: "web_search_20250305", name: "web_search", max_uses: 1 },
-          ],
+          query: checkedQuery(query),
+          count: 8,
+          need_content: false,
         }),
       },
     );
@@ -116,27 +149,65 @@ export class DeepSeekSearch implements ResearchSearch {
       const error = new Error(
         `DeepSeek 联网检索失败（HTTP ${response.status}），请检查配置后手动重试`,
       );
-      if ([401, 402, 429].includes(response.status))
+      if ([400, 401, 402, 403, 422, 429].includes(response.status))
         Object.assign(error, { notBilled: true });
       throw error;
     }
     const data = (await response.json()) as any;
-    if (
+    if (Array.isArray(data.results))
+      onResponse({ input: 0, output: 0, searches: 1 });
+    else if (
       Number.isInteger(data.usage?.input_tokens) &&
-      data.usage.input_tokens >= 0 &&
-      Number.isInteger(data.usage?.output_tokens) &&
-      data.usage.output_tokens >= 0
-    ) {
+      Number.isInteger(data.usage?.output_tokens)
+    )
       onResponse({
         input: data.usage.input_tokens,
         output: data.usage.output_tokens,
-        searches: Number.isInteger(
-          data.usage?.server_tool_use?.web_search_requests,
-        )
-          ? Math.max(0, data.usage.server_tool_use.web_search_requests)
-          : 0,
+        searches: data.usage?.server_tool_use?.web_search_requests ?? 0,
       });
-    }
     return parseSearchResponse(data);
   }
+}
+
+function checkedQuery(query: string): string {
+  const value = query.trim();
+  if (!value || [...value].length > 128)
+    throw new Error("搜索词需为 1–128 个字符，请缩短后重试");
+  return value;
+}
+// Official Fetch returns page Markdown; summaries never become read evidence.
+export async function readDeepSeekPage(
+  key: string,
+  input: string,
+  signal?: AbortSignal,
+): Promise<import("./public-source").PageRead> {
+  const url = publicUrl(input).href;
+  const response = await fetch("https://api.deepseek.com/v1/tools/fetch", {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(90000)])
+      : AbortSignal.timeout(90000),
+    body: JSON.stringify({ url }),
+  });
+  if (!response.ok)
+    throw new Error(
+      `DeepSeek 正文读取失败（HTTP ${response.status}），可打开原网页阅读`,
+    );
+  const data = (await response.json()) as {
+    title?: unknown;
+    content?: unknown;
+  };
+  if (typeof data.content !== "string" || data.content.trim().length < 40)
+    throw new Error("未取得足够的页面正文");
+  return {
+    title: typeof data.title === "string" ? data.title : "",
+    text: data.content.slice(0, 12000),
+    finalUrl: url,
+    coverage: `DeepSeek Fetch 公开页面正文${data.content.length > 12000 ? "，选取前 12,000 字符" : ""}；不宣称论文全文，按选读片段核查`,
+  };
 }

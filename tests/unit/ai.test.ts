@@ -260,7 +260,7 @@ describe("bounded AI processing", () => {
     const s = open();
     expect(() =>
       s.capture({ raw: "自动记录", model: "deepseek-v4-pro" }),
-    ).toThrow("Pro 仅用于主动讨论");
+    ).toThrow("当前仅支持 DeepSeek Flash");
     s.capture({ raw: "原文" });
     let calls = 0;
     const transport: AiTransport = {

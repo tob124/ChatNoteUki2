@@ -78,7 +78,7 @@ export class DeepSeek implements AiTransport {
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model,
+          model: "deepseek-flash",
           instructions: system,
           input: [{ role: "user", content: context }],
           reasoning: { effort: "none" },

@@ -80,6 +80,7 @@ export class AiRequests {
     validate?: (value: unknown) => unknown,
     onCompletion?: (r: Completion) => void,
   ): Promise<{ value: any; usage: { input: number; output: number } }> {
+    model = "deepseek-flash"; // Also normalizes queued legacy Pro tasks.
     const fingerprint = createHash("sha256")
       .update(
         JSON.stringify([

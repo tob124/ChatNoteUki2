@@ -362,8 +362,8 @@ export const captureSchema = z
       .default("deepseek-flash"),
   })
   .refine(
-    (input) => input.mode === "discussion" || input.model === "deepseek-flash",
-    "Pro 仅用于主动讨论，自动记录使用 Flash",
+    (input) => input.model === "deepseek-flash",
+    "当前仅支持 DeepSeek Flash",
   );
 export type Capture = z.input<typeof captureSchema>;
 export const aiNoteSchema = z.object({

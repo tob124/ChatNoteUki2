@@ -14,7 +14,6 @@ export function NoteReply({
 }) {
   const rootId = note.parentNoteId ?? note.id;
   const [draft, setDraft] = useState<string | null>(null);
-  const [pro, setPro] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [materials, setMaterials] = useState<MaterialSummary[]>([]),
@@ -83,14 +82,13 @@ export function NoteReply({
               mode: "discussion",
               parentNoteId: rootId,
               parentRevision,
-              model: pro ? "deepseek-v4-pro" : "deepseek-flash",
+              model: "deepseek-flash",
               materialIds,
               ...(researchId ? { researchId } : {}),
             });
             committed = true;
             submission.current = null;
             setDraft("");
-            setPro(false);
             await window.uki.workspaceState(key, state(""));
             requestAnimationFrame(() => {
               if (
@@ -177,15 +175,7 @@ export function NoteReply({
       )}
       <div className="note-reply-footer">
         <span className="hint">草稿仅本机保存 · Ctrl + Enter</span>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={pro}
-            onChange={(e) => setPro(e.target.checked)}
-            disabled={sending}
-          />
-          本次 Pro
-        </label>
+        <span className="hint">DeepSeek Flash</span>
         <button className="primary" disabled={!draft?.trim() || sending}>
           {sending ? "保存中…" : "发送回复"}
         </button>

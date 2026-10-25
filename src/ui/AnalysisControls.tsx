@@ -18,8 +18,7 @@ export function AnalysisControls({
   onSettings(): void;
   onResult(task: AiTask): void;
 }) {
-  const [pro, setPro] = useState(false),
-    [submitting, setSubmitting] = useState<string | null>(null),
+  const [submitting, setSubmitting] = useState<string | null>(null),
     [error, setError] = useState("");
   const [receipts, setReceipts] = useState<Record<string, string>>({});
   const taskFor = (kind: AiTask["kind"]) => {
@@ -36,8 +35,7 @@ export function AnalysisControls({
   const start = (kind: "cognition" | "recap") => {
     setSubmitting(kind);
     setError("");
-    const model: Note["model"] = pro ? "deepseek-v4-pro" : "deepseek-flash";
-    setPro(false);
+    const model: Note["model"] = "deepseek-flash";
     onAction(async () => {
       try {
         const id = await (kind === "recap"
@@ -61,18 +59,7 @@ export function AnalysisControls({
     <div className="analysis-controls">
       <div className="analysis-heading">
         <h3>AI 分析</h3>
-        <details className="analysis-options">
-          <summary>模型选项{pro ? " · Pro" : " · Flash"}</summary>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={pro}
-              onChange={(e) => setPro(e.target.checked)}
-              disabled={!!submitting}
-            />
-            本次主动分析使用 Pro
-          </label>
-        </details>
+        <span className="hint">DeepSeek Flash</span>
       </div>
       {(["recap", "cognition"] as const).map((kind) => {
         const task = taskFor(kind),

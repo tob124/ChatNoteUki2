@@ -136,7 +136,7 @@ const automaticSync = new AutoSync(async (kind) => {
   }
 });
 const uuid = z.string().uuid();
-const model = z.enum(["deepseek-flash", "deepseek-v4-pro"]);
+const model = z.literal("deepseek-flash");
 function notify() {
   win?.webContents.send("uki:changed");
 }
