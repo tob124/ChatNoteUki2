@@ -22,7 +22,7 @@ export function ResearchControls({
 }) {
   const [open, setOpen] = useState(false),
     [question, setQuestion] = useState(title.slice(0, 300)),
-    [queries, setQueries] = useState(title.slice(0, 180)),
+    [queries, setQueries] = useState([...title].slice(0, 128).join("")),
     [ready, setReady] = useState(false),
     [receipt, setReceipt] = useState<string | null>(null),
     [submitting, setSubmitting] = useState(false),

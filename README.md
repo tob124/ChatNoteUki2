@@ -1,4 +1,6 @@
-# ChatNoteUki 0.5.1
+# ChatNoteUki 0.5.2
+
+0.5.2 适配官方 Search / Fetch API，修复联网资料查询并统一使用 Flash；保留已有证据核对、检查点与发布流程。详见 [0.5.2 说明](docs/RELEASE-0.5.2.md)。
 
 0.5.1 修整日常界面：页面与空状态说明、集中输入工具、问题操作菜单、右栏分组、高级设置收起、菜单和弹窗焦点。也修复切换页面时丢失待刷新通知的问题。详见 [界面修整与验证](docs/UIUX-0.5.1.md)。保持现有资料格式及功能范围。
 
@@ -8,7 +10,7 @@
 
 ## 安装和升级
 
-从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.5.1-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
+从 [GitHub Releases](https://github.com/tob124/ChatNoteUki2/releases/latest) 下载 ChatNoteUki-0.5.2-Setup-x64.exe，直接安装升级。安装程序和卸载保留资料。实际目录见「设置与数据」，默认 `%APPDATA%/ChatNoteUki/`；可用 `UKI_DATA_DIR` 指定独立目录。
 
 首次升级到 0.5 系列前自动创建 `backups/before-0.5.0-*.db`；0.5.0 → 0.5.1 不做资料迁移。现有正文、更正、人工标题和归属、认知、草稿及凭据保留，不重复已经完成的旧原文重导。云端格式仍为 **6**，继续读取 1–5，旧程序不能继续维护格式 6。详见 [升级说明](docs/UPGRADE-0.5.0.md)。
 
@@ -16,7 +18,7 @@ API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 
 
 ## 记录、讨论和整理
 
-默认直接记录，无须先选问题。本机保存、AI 处理和云端上传有各自状态。自动任务使用 deepseek-flash；Pro 只在主动深入讨论或认知分析中手动选择。
+默认直接记录，无须先选问题。本机保存、AI 处理和云端上传有各自状态。所有模型任务仅使用 deepseek-flash，旧队列中的 Pro 任务执行时也会改用 Flash。历史记录保持原样。
 
 每条笔记生成自己的标题。去除首尾空白后不超过 120 个 Unicode 字符且中文句子不超过两句时，列表显示深灰「原文」；长笔记显示蓝色「AI 摘要」。长度是写作目标，完整返回文字保存，列表只做预览。有效标题、摘要或回应不会因分类失败而丢失，显示部分完成并可重试。
 
@@ -36,7 +38,7 @@ API key 和 WebDAV 第三方应用密码用 Windows DPAPI 加密，只在对应 
 
 ## AI 容量与失败处理
 
-结构任务使用 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/) JSON Schema；讨论用普通文本流式回复。外部检索使用原生搜索接口，不使用 Responses 中被忽略的搜索工具。
+结构任务使用 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/) JSON Schema；讨论用普通文本流式回复。外部检索使用官方独立 Search / Fetch API，不再调用 Anthropic 的模型搜索工具。
 
 安装包带官方 tokenizer，离线计入提示词和结构定义并保留余量。默认输入目标 32K tokens，高级设置最高 128K；长资料分段处理，保存覆盖范围和检查点。默认输出：笔记 2K、讨论 8K、整理/回顾/认知/资料综合 16K，截断允许一次扩容重新生成，最高 32K。
 
@@ -56,7 +58,7 @@ PDF 保留页码，DOCX/文本保留段落；最多提取 100 万字符，显示
 
 「系统听写 · Win+H」定位输入框并提示使用，由 [Windows 处理听写](https://support.microsoft.com/en-us/accessibility/windows/use-voice-typing-to-talk-instead-of-type-on-your-pc)，需要网络和麦克风。文字先进入草稿，核对后保存，不自动发送。
 
-「查找资料」由用户主动发起，发送前确认可公开的搜索词。最多两次客户端检索及四个公开静态来源，保留逐字引文和实际读取范围；未读取、登录或付费内容不作为已核实依据。供应商内部搜索次数及上下文不由客户端完全控制，实际用量可能高于客户端预算。失败重试复用检索及成功读取。见 [0.3 资料设计](UPGRADE-0.3.md)。
+「查找资料」由用户主动发起，发送前确认可公开的搜索词。每条查询最多128个字符，最多两次独立检索及四次官方 Fetch 正文读取，保留逐字引文和实际读取范围；未读取、登录或付费内容不作为已核实依据。Search / Fetch 按请求收费，Search 每次成功请求记为一次检索，不生成模型 token 用量。搜索摘要、评分不能代替原文证据。失败重试复用检索及成功读取。见 [0.3 资料设计](UPGRADE-0.3.md)。
 
 ## 手机、同步和换机
 

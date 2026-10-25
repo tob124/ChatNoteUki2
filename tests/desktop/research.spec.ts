@@ -60,28 +60,27 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
       }) as any;
       globalThis.fetch = async (url, init) => {
         const body = JSON.parse(String(init?.body));
-        if (String(url).includes("/anthropic/")) {
-          runtime.publicQueries.push(body.messages[0].content);
+        if (String(url).endsWith("/v1/tools/fetch")) {
+          if (runtime.rejectPages) return new Response("", { status: 403 });
+          return new Response(
+            JSON.stringify({
+              title: "公开通勤研究",
+              content:
+                "观察研究发现，通勤时间与满意度存在相关关系。研究对象和方法限制了结论，这不是因果证明。",
+            }),
+          );
+        }
+        if (String(url).endsWith("/v1/tools/search")) {
+          runtime.publicQueries.push(body.query);
           if (runtime.rejectPages)
             return new Response(
               JSON.stringify({
-                content: [
+                results: [
                   {
-                    type: "web_search_tool_result",
-                    content: [
-                      {
-                        type: "web_search_result",
-                        url: "https://example.com/unread",
-                        title: "暂时无法读取的资料",
-                      },
-                    ],
+                    url: "https://example.com/unread",
+                    title: "暂时无法读取的资料",
                   },
                 ],
-                usage: {
-                  input_tokens: 20,
-                  output_tokens: 10,
-                  server_tool_use: { web_search_requests: 1 },
-                },
               }),
             );
           return await new Promise<Response>((resolve) =>
@@ -113,7 +112,15 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
             };
         return new Response(
           JSON.stringify({
-            choices: [{ message: { content: body.stream ? content.reply : JSON.stringify(content) } }],
+            choices: [
+              {
+                message: {
+                  content: body.stream
+                    ? content.reply
+                    : JSON.stringify(content),
+                },
+              },
+            ],
             usage: { prompt_tokens: 40, completion_tokens: 30 },
           }),
         );
@@ -147,23 +154,9 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
       send(
         new Response(
           JSON.stringify({
-            content: [
-              {
-                type: "web_search_tool_result",
-                content: [
-                  {
-                    type: "web_search_result",
-                    url: "https://example.com/study",
-                    title: "公开通勤研究",
-                  },
-                ],
-              },
+            results: [
+              { url: "https://example.com/study", title: "公开通勤研究" },
             ],
-            usage: {
-              input_tokens: 20,
-              output_tokens: 10,
-              server_tool_use: { web_search_requests: 1 },
-            },
           }),
         ),
       );
@@ -276,7 +269,10 @@ test("research: confirmed public query, stage feedback, evidence reading, reflec
     await app.close();
     app = await launch();
     page = await app.firstWindow();
-    await page.getByRole("navigation").getByRole("button", { name: "资料", exact: true }).click();
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: "资料", exact: true })
+      .click();
     await expect(page.locator(".research-card")).toHaveCount(1);
     await expect(page.getByLabel("资料后的我的判断")).toHaveValue(
       "还没有发出的资料判断草稿。",

@@ -5,7 +5,19 @@ export const researchInputSchema = z
     noteId: z.string().uuid().nullable().default(null),
     threadId: z.string().uuid().nullable().default(null),
     question: z.string().trim().min(3).max(300),
-    queries: z.array(z.string().trim().min(2).max(180)).min(1).max(2),
+    queries: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(2)
+          .refine(
+            (value) => [...value].length <= 128,
+            "每条搜索词最多128个字符",
+          ),
+      )
+      .min(1)
+      .max(2),
   })
   .refine(
     (v) => !!v.noteId || !!v.threadId,

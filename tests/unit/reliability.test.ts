@@ -247,3 +247,31 @@ it("a deleted import receipt still deduplicates an unchanged inbox and an append
   expect(appended.snapshot).not.toContain("删除此项");
   expect(s.workspace({ workspace: "all" }).total).toBe(2);
 });
+
+it("normalizes a legacy Pro request to Flash at the transport boundary", async () => {
+  const { DeepSeek } = await import("../../electron/ai");
+  const send = vi.fn(
+    async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      ),
+  );
+  vi.stubGlobal("fetch", send);
+  try {
+    await new DeepSeek().complete(
+      "fixture",
+      "deepseek-v4-pro",
+      "系统提示",
+      "合成材料",
+      100,
+    );
+    expect(JSON.parse(String(send.mock.calls[0][1]?.body)).model).toBe(
+      "deepseek-flash",
+    );
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

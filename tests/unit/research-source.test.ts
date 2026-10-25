@@ -8,6 +8,7 @@ import {
 } from "../../electron/public-source";
 import {
   DeepSeekSearch,
+  readDeepSeekPage,
   parseSearchResponse,
 } from "../../electron/research-search";
 import {
@@ -206,10 +207,14 @@ describe("structured research search and verifiable excerpts", () => {
     );
     await new DeepSeekSearch(send).search("test-key", "城市通勤研究", () => {});
     const body = JSON.parse(String(send.mock.calls[0][1]?.body));
-    expect(body.model).toBe("deepseek-v4-flash");
-    expect(body.tools[0].max_uses).toBe(1);
-    expect(body.messages[0].content).toContain("城市通勤研究");
-    expect(body.max_tokens).toBe(1800);
+    expect(send.mock.calls[0][0]).toBe(
+      "https://api.deepseek.com/v1/tools/search",
+    );
+    expect(body).toEqual({
+      query: "城市通勤研究",
+      count: 8,
+      need_content: false,
+    });
   });
   it("fails missing usage and marks explicit authorization refusal as not billed", async () => {
     expect(() => parseSearchResponse({ ...result(), usage: {} })).toThrow(
@@ -304,4 +309,72 @@ describe("structured research search and verifiable excerpts", () => {
       ),
     ).toThrow("AI 联系、局限格式不完整");
   });
+});
+
+it("accepts official Search results without model usage and counts one standalone request", () => {
+  const parsed = parseSearchResponse({
+    results: [
+      {
+        url: "https://example.com/source",
+        title: "官方资料",
+        snippet: "搜索摘要",
+        summary: "模型摘要",
+        content: "这也不应直接变成核查证据",
+        authority: 4,
+      },
+    ],
+  });
+  expect(parsed).toMatchObject({ input: 0, output: 0, searches: 1 });
+  expect(parsed.sources[0]).toMatchObject({
+    status: "discovered",
+    text: "",
+    snippet: "搜索摘要",
+  });
+  expect(parseSearchResponse({ results: [] }).sources).toEqual([]);
+});
+
+it("uses official Fetch content and preserves an explicit coverage bound", async () => {
+  const send = vi.fn(
+    async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({ title: "公开正文", content: "逐字证据".repeat(5000) }),
+      ),
+  );
+  vi.stubGlobal("fetch", send);
+  try {
+    const page = await readDeepSeekPage(
+      "fixture",
+      "https://example.org/article",
+    );
+    expect(send.mock.calls[0][0]).toBe(
+      "https://api.deepseek.com/v1/tools/fetch",
+    );
+    expect(JSON.parse(String(send.mock.calls[0][1]?.body))).toEqual({
+      url: "https://example.org/article",
+    });
+    expect(page.text.length).toBe(12000);
+    expect(page.coverage).toContain("12,000");
+    await expect(
+      readDeepSeekPage("fixture", "http://127.0.0.1/"),
+    ).rejects.toThrow();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+it("rejects oversized queries before dispatch and prioritizes authority only as a discovery hint", async () => {
+  const send = vi.fn(async () => new Response(JSON.stringify({ results: [] })));
+  await expect(
+    new DeepSeekSearch(send).search("fixture", "字".repeat(129), () => {}),
+  ).rejects.toThrow("128");
+  expect(send).not.toHaveBeenCalled();
+  const parsed = parseSearchResponse({
+    results: [
+      { url: "https://example.org/a", authority: 1 },
+      { url: "https://example.org/b", authority: 4 },
+    ],
+  });
+  expect(parsed.sources[0].url).toContain("/b");
+  expect(
+    parsed.sources.every((s) => s.status === "discovered" && !s.text),
+  ).toBe(true);
 });
